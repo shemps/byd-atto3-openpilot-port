@@ -1,0 +1,346 @@
+diff --git a/openpilot/system/hardware/pc/hardware.py b/openpilot/system/hardware/pc/hardware.py
+index 825e0e44..2aea5cbc 100644
+--- a/openpilot/system/hardware/pc/hardware.py
++++ b/openpilot/system/hardware/pc/hardware.py
+@@ -1,5 +1,5 @@
+ from openpilot.cereal import log
+-from openpilot.system.hardware.base import HardwareBase
++from openpilot.system.hardware.base import HardwareBase, ThermalConfig, ThermalZone
+ 
+ NetworkType = log.DeviceState.NetworkType
+ 
+@@ -8,5 +8,10 @@ class Pc(HardwareBase):
+   def get_device_type(self):
+     return "pc"
+ 
++  def get_thermal_config(self):
++    # M9/PC: give the HUD CPU tile a real value — Intel package temp zone,
++    # acpitz fallback (a missing zone type reads 0; consumers take max())
++    return ThermalConfig(cpu=[ThermalZone("x86_pkg_temp"), ThermalZone("acpitz")])
++
+   def get_network_type(self):
+     return NetworkType.wifi
+diff --git a/openpilot/tools/webcam/camera.py b/openpilot/tools/webcam/camera.py
+index 7926766c..5facc9ee 100644
+--- a/openpilot/tools/webcam/camera.py
++++ b/openpilot/tools/webcam/camera.py
+@@ -1,39 +1,228 @@
++import glob
++import os
++import numpy as np
+ import av
+ import cv2 as cv
++from openpilot.system.camerad.cameras.nv12_info import get_nv12_info
++
++# Everything downstream (model warp kernels, intrinsics, UI) speaks comma's frame.
++# The capture is normalized to this canvas: center-crop if larger, pad if smaller.
++# Cropping/padding does NOT change focal length - set WEBCAM_FOCAL_PX (in the run
++# script) to the lens focal in pixels AT CAPTURE RESOLUTION. Wall test at 1.00 m:
++# f_px = capture_width_px * 100 / wall_width_cm  (1920 wide: f = 192000 / cm)
++CANVAS_W, CANVAS_H = 1928, 1208
++
++# The model's warp kernels (and get_nv12_info consumers) expect DEVICE-layout NV12:
++# rows padded to a 128-aligned stride, Y plane padded to aligned height, UV plane at
++# stride*y_height. Publishing tight-packed rows shears every frame the model sees
++# into static (while the UI, reading buffer metadata, looks fine). Repack every frame.
++NV12_STRIDE, NV12_Y_H, NV12_UV_H, NV12_SIZE = get_nv12_info(CANVAS_W, CANVAS_H)
++NV12_UV_OFFSET = NV12_STRIDE * NV12_Y_H
++
++# best-first; the V4L2+MJPG combo is mandatory (auto backend falls back to YUY2 at 2-5 fps)
++RESOLUTIONS = [(2560, 1440), (1920, 1080), (1280, 720)]
++# ...but a bigger capture is not automatically better: _normalize CENTER-CROPS anything
++# wider than the canvas, so it buys detail with field of view. The 4MP road cam at 2560
++# leaves a 36 deg canvas (model wants 31.4 deg + calibration yaw margin) while its own
++# 1920 mode is a full-frame downscale = 47 deg. Cap the capture per rig.
++RESOLUTIONS = [r for r in RESOLUTIONS if r[0] <= int(os.environ.get("WEBCAM_MAX_CAPTURE_W", "9999"))]
++
++FLIP_180 = os.environ.get("WEBCAM_FLIP", "0") == "1"
++
++# v4l2 control name (as qv4l2 shows it) -> OpenCV property. Only the ones both
++# modules actually expose; anything else is skipped loudly rather than guessed.
++_V4L2_PROPS = {
++  "brightness": cv.CAP_PROP_BRIGHTNESS,
++  "contrast": cv.CAP_PROP_CONTRAST,
++  "saturation": cv.CAP_PROP_SATURATION,
++  "hue": cv.CAP_PROP_HUE,
++  "gamma": cv.CAP_PROP_GAMMA,
++  "gain": cv.CAP_PROP_GAIN,
++  "sharpness": cv.CAP_PROP_SHARPNESS,
++  "backlight_compensation": cv.CAP_PROP_BACKLIGHT,
++  "white_balance_automatic": cv.CAP_PROP_AUTO_WB,
++  "white_balance_temperature": cv.CAP_PROP_WB_TEMPERATURE,
++  "auto_exposure": cv.CAP_PROP_AUTO_EXPOSURE,
++  "exposure_time_absolute": cv.CAP_PROP_EXPOSURE,
++}
++
++
++def _try_open(dev):
++  cap = cv.VideoCapture(dev, cv.CAP_V4L2)
++  if not cap.isOpened():
++    return None, None
++  cap.set(cv.CAP_PROP_FOURCC, cv.VideoWriter_fourcc(*"MJPG"))
++  for w, h in RESOLUTIONS:
++    cap.set(cv.CAP_PROP_FRAME_WIDTH, float(w))
++    cap.set(cv.CAP_PROP_FRAME_HEIGHT, float(h))
++    cap.set(cv.CAP_PROP_FPS, 30.0)
++    if (cap.get(cv.CAP_PROP_FRAME_WIDTH), cap.get(cv.CAP_PROP_FRAME_HEIGHT)) == (w, h):
++      ok, frame = cap.read()
++      if ok and frame is not None:
++        return cap, (w, h)
++  cap.release()
++  return None, None
++
+ 
+ class Camera:
+   def __init__(self, cam_type_state, stream_type, camera_id):
+-    try:
+-      camera_id = int(camera_id)
+-    except ValueError: # allow strings, ex: /dev/video0
+-      pass
+     self.cam_type_state = cam_type_state
+     self.stream_type = stream_type
+     self.cur_frame_id = 0
+ 
+-    print(f"Opening {cam_type_state} at {camera_id}")
++    # auto-detect: env override first, then the configured id, then scan
++    candidates = []
++    if os.environ.get("WEBCAM_DEVICE"):
++      candidates.append(os.environ["WEBCAM_DEVICE"])
++    candidates.append(camera_id)
++    # scan-fallback only for bare ids: with two near-identical cameras mounted, a
++    # "whatever opens" fallback can silently swap road and wide. An explicit path
++    # (by-id/by-path) must open exactly that device or fail loudly.
++    if not str(camera_id).startswith("/"):
++      candidates += sorted(d for d in glob.glob("/dev/video*"))
++
++    self.cap = None
++    for dev in dict.fromkeys(str(c) for c in candidates):
++      cap, size = _try_open(dev)
++      if cap is not None:
++        self.cap, (self.cap_w, self.cap_h) = cap, size
++        print(f"Opened {cam_type_state} at {dev}: {size[0]}x{size[1]} MJPG "
++              f"(measured fps follows camerad pacing)")
++        break
++    if self.cap is None:
++      raise RuntimeError(f"no working MJPG camera found (tried {candidates})")
++
++    # NOT setting white balance here, deliberately - an earlier version of this
++    # file forced CAP_PROP_AUTO_WB=0 on the wide camera, and that was wrong.
++    # It was measured (G/B 2.19 against the road's 1.02) BEFORE the gamma bug
++    # below was found: at gamma 1.00 the frame was so crushed that auto-WB had
++    # almost no signal to work with. With gamma fixed, auto and manual are
++    # indistinguishable - wide G/R 1.02 / G/B 0.98 on auto against 1.01 / 0.97
++    # on manual, with the road at 1.00 / 1.08 in the same simultaneous frame.
++    # Leaving auto ON keeps both cameras adapting the same way through tunnels,
++    # dusk and sodium light; pinning one at 4600 K while the other tracks is a
++    # mismatch that only shows up when the light changes, which is exactly when
++    # the two model inputs must agree.
+ 
+-    self.cap = cv.VideoCapture(camera_id)
++    # The wide stream comes out dark: measured on route 000000c0's recorded
++    # video, its road region sits at luma 54.6 with 46.9% of it crushed under 32
++    # and detail SD 19.3, against the road camera's 81.3 / 12.6% / 45.4 in the
++    # same frames. The modules ship very different gain defaults - road OS04A10
++    # 64 of 128, wide SC200AI 0 of 100 - and nothing here set gain at all.
++    #
++    # UNSET = touch nothing, which is deliberate: the null result says model
++    # uncertainty does NOT track wide brightness (corr +0.04 over a 7x range), so
++    # there is no measured harm to justify changing what the car drives with
++    # before a value has been picked on the bench. byd_port/wide_gain_bench.py
++    # sweeps it against blown highlights; put the winner in the launcher.
++    wide_gain = os.environ.get("WEBCAM_WIDE_GAIN")
++    if cam_type_state == "wideRoadCameraState" and wide_gain:
++      self.cap.set(cv.CAP_PROP_GAIN, float(wide_gain))
+ 
+-    self.cap.set(cv.CAP_PROP_FRAME_WIDTH, 1280.0)
+-    self.cap.set(cv.CAP_PROP_FRAME_HEIGHT, 720.0)
+-    self.cap.set(cv.CAP_PROP_FPS, 25.0)
++    # THE wide-camera darkness fix. The two modules ship different gamma defaults:
++    # the road OS04A10 powers up at 320 (range 100..500), the wide SC200AI at 100
++    # (range 72..500). UVC gamma is x100, so the wide was applying gamma 1.00 -
++    # LINEAR - while the road applies 3.20. Linear 8-bit spends almost no code
++    # values on the lower stops, which is exactly the observed failure: on route
++    # c2 the wide's whole-frame median luma was 20 against comma 4's wide at 78,
++    # with p1 and p5 both pinned at 0.
++    #
++    # Measured on the bench across the full range (byd_port/cam_config_compare.py
++    # found it, a gamma sweep confirmed it): median luma 12 and 96.4% of frame
++    # under luma 32 at gamma 100, against median 98 and 0.1% at gamma 320.
++    # Highlights are unaffected - >240 stayed at 0.2% at EVERY gamma value - so
++    # this buys shadow detail without trading away the sky.
++    #
++    # 320 is chosen to MATCH THE ROAD CAMERA, not tuned on a bench scene: comma's
++    # own two cameras are photometrically matched (sky/road 0.75 vs 0.90) and the
++    # model takes both as co-equal inputs, so consistency between our two is worth
++    # more than chasing an absolute on an uncontrolled scene. It is also the road
++    # module's own factory default. WEBCAM_WIDE_GAMMA overrides; 0 disables.
++    wide_gamma = os.environ.get("WEBCAM_WIDE_GAMMA", "320")
++    if cam_type_state == "wideRoadCameraState" and wide_gamma != "0":
++      self.cap.set(cv.CAP_PROP_GAMMA, float(wide_gamma))
+ 
+-    self.W = self.cap.get(cv.CAP_PROP_FRAME_WIDTH)
+-    self.H = self.cap.get(cv.CAP_PROP_FRAME_HEIGHT)
++    # Match the road camera's backlight_compensation, which is 0. The two modules
++    # power up differently (road 0 of 0..2, wide 1 of 0..3) and the ranges are not
++    # even the same length, so "the same number" is not automatically "the same
++    # behaviour" - but 0 is off on both, which is the one value that means the
++    # same thing on each.
++    # Measured on the wide across its full range: 0/1/2/3 give IDENTICAL output
++    # (p5 91, median 118, p95 160 at every setting), so on this module the control
++    # is inert and this changes nothing today. It is set anyway so the two cameras
++    # hold the same nominal config, and so that if the control ever does bite - a
++    # different scene, or a replacement module where it is live - they bite the
++    # same way. On the ROAD module it is emphatically not inert: 2 lifts p5 51->76
++    # and median 104->144 while pushing blown highlights 0.5%->1.5%.
++    if cam_type_state == "wideRoadCameraState":
++      self.cap.set(cv.CAP_PROP_BACKLIGHT, 0)
++
++    # Free-form escape hatch, applied LAST so it overrides everything above.
++    # Point of it: qv4l2 (the V4L2 Test Bench GUI) is far faster for finding good
++    # values than a capture-and-measure loop, but anything found there is undone
++    # the moment camerad starts and re-applies the defaults above. This carries a
++    # GUI-found combination straight into the launcher with no code change:
++    #   WEBCAM_WIDE_CTRLS="gamma=300,contrast=45,saturation=22,backlight_compensation=2"
++    #   WEBCAM_ROAD_CTRLS="..."
++    # Names are the v4l2 control names qv4l2 shows (lowercased, spaces -> _).
++    # Unknown names are skipped with a log line rather than killing the camera.
++    env = ("WEBCAM_WIDE_CTRLS" if cam_type_state == "wideRoadCameraState"
++           else "WEBCAM_ROAD_CTRLS")
++    for item in os.environ.get(env, "").split(","):
++      if "=" not in item:
++        continue
++      name, _, val = item.strip().partition("=")
++      prop = _V4L2_PROPS.get(name.strip())
++      if prop is None:
++        print(f"{env}: no OpenCV property for {name.strip()!r}, skipped")
++        continue
++      ok = self.cap.set(prop, float(val))
++      print(f"{env}: {name.strip()}={val} {'ok' if ok else 'REFUSED by driver'}")
++
++    self.W = float(CANVAS_W)
++    self.H = float(CANVAS_H)
++    self._canvas = np.zeros((CANVAS_H, CANVAS_W, 3), dtype=np.uint8)
++    self._nv12_out = np.zeros(NV12_SIZE, dtype=np.uint8)
+ 
+   @classmethod
+   def bgr2nv12(self, bgr):
+     frame = av.VideoFrame.from_ndarray(bgr, format='bgr24')
+     return frame.reformat(format='nv12').to_ndarray()
+ 
++  def _normalize(self, frame):
++    h, w = frame.shape[:2]
++    if (w, h) == (CANVAS_W, CANVAS_H):
++      return frame
++    # center-crop any excess
++    if w > CANVAS_W:
++      x0 = (w - CANVAS_W) // 2
++      frame = frame[:, x0:x0 + CANVAS_W]
++      w = CANVAS_W
++    if h > CANVAS_H:
++      y0 = (h - CANVAS_H) // 2
++      frame = frame[y0:y0 + CANVAS_H, :]
++      h = CANVAS_H
++    # center-pad the rest (pad is outside the model's crop at a correct focal)
++    x0 = (CANVAS_W - w) // 2
++    y0 = (CANVAS_H - h) // 2
++    self._canvas[y0:y0 + h, x0:x0 + w] = frame
++    return self._canvas
++
+   def read_frames(self):
+     while True:
+       ret, frame = self.cap.read()
+       if not ret:
+         break
+-      # Rotate the frame 180 degrees (flip both axes)
+-      frame = cv.flip(frame, -1)
+-      yuv = Camera.bgr2nv12(frame)
+-      yield yuv.data.tobytes()
++      if FLIP_180:  # only for upside-down mounted cameras (WEBCAM_FLIP=1)
++        frame = cv.flip(frame, -1)
++      frame = self._normalize(frame)
++      yuv = Camera.bgr2nv12(frame)  # tight rows: (H*3/2, W)
++      # repack tight NV12 into the device layout the model warp expects
++      y = yuv[:CANVAS_H]
++      uv = yuv[CANVAS_H:CANVAS_H + CANVAS_H // 2]
++      out = self._nv12_out
++      out[:NV12_STRIDE * CANVAS_H].reshape(CANVAS_H, NV12_STRIDE)[:, :CANVAS_W] = y
++      out[NV12_UV_OFFSET:NV12_UV_OFFSET + NV12_STRIDE * (CANVAS_H // 2)] \
++        .reshape(CANVAS_H // 2, NV12_STRIDE)[:, :CANVAS_W] = uv
++      yield out.tobytes()
+     self.cap.release()
+diff --git a/openpilot/tools/webcam/camerad.py b/openpilot/tools/webcam/camerad.py
+index 4bcff408..4077c678 100755
+--- a/openpilot/tools/webcam/camerad.py
++++ b/openpilot/tools/webcam/camerad.py
+@@ -1,7 +1,10 @@
+ #!/usr/bin/env python3
+ import threading
++import time
+ import os
+ import platform
++
++import cv2 as cv
+ from collections import namedtuple
+ 
+ from msgq.visionipc import VisionIpcServer, VisionStreamType
+@@ -31,15 +34,26 @@ class Camerad:
+ 
+     self.cameras = []
+     for c in CAMERAS:
+-      cam_device = f"/dev/video{c.cam_id}" if platform.system() != "Darwin" else c.cam_id
++      # bare index -> /dev/videoN; absolute path (e.g. /dev/v4l/by-id/...) passes
++      # through - videoN enumeration order is not stable across boots with two cams
++      if str(c.cam_id).startswith("/"):
++        cam_device = c.cam_id
++      else:
++        cam_device = f"/dev/video{c.cam_id}" if platform.system() != "Darwin" else c.cam_id
+       cam = Camera(c.msg_name, c.stream_type, cam_device)
+       self.cameras.append(cam)
+-      self.vipc_server.create_buffers(c.stream_type, 20, cam.W, cam.H)
++      from openpilot.tools.webcam.camera import NV12_SIZE, NV12_STRIDE, NV12_UV_OFFSET
++      # device-layout buffers so UI/encoder metadata matches the model warp layout
++      self.vipc_server.create_buffers_with_sizes(c.stream_type, 20, int(cam.W), int(cam.H),
++                                                 NV12_SIZE, NV12_STRIDE, NV12_UV_OFFSET)
+ 
+     self.vipc_server.start_listener()
+ 
+-  def _send_yuv(self, yuv, frame_id, pub_type, yuv_type):
+-    eof = int(frame_id * 0.05 * 1e9)
++  def _send_yuv(self, yuv, frame_id, pub_type, yuv_type, cam=None):
++    # real boot-clock timestamp (same clock as logMonoTime); the old synthetic
++    # frame_id*50ms stamp starts at ~0, so locationd rejected every cameraOdometry
++    # observation as older than its filter time (fed by real-clock IMU data)
++    eof = time.clock_gettime_ns(time.CLOCK_BOOTTIME)
+     self.vipc_server.send(yuv_type, yuv, frame_id, eof, eof)
+     dat = messaging.new_message(pub_type, valid=True)
+     msg = {
+@@ -48,13 +62,28 @@ class Camerad:
+                     0.0, 1.0, 0.0,
+                     0.0, 0.0, 1.0]
+     }
++    # Publish what the camera's auto-exposure actually chose. FrameData has had
++    # these fields all along and this camerad never filled them, which is why
++    # "is the wide stream dark because of a setting, or because the sensor cannot
++    # do it?" was not answerable from any drive log - only from a bench sweep
++    # against an uncontrolled scene, which is not reproducible. With this, every
++    # future drive carries the answer per camera per frame.
++    # exposure_time_absolute is UVC 100 us units, so integLines here is
++    # exposure * 0.1 ms; gain is the raw v4l2 control. cap.get() is one ioctl -
++    # 20 Hz x 2 cameras is noise next to the JPEG decode already in this loop.
++    if cam is not None and cam.cap is not None:
++      try:
++        msg["integLines"] = int(cam.cap.get(cv.CAP_PROP_EXPOSURE))
++        msg["gain"] = float(cam.cap.get(cv.CAP_PROP_GAIN))
++      except Exception:
++        pass
+     setattr(dat, pub_type, msg)
+     self.pm.send(pub_type, dat)
+ 
+   def camera_runner(self, cam):
+     rk = Ratekeeper(20, None)
+     for yuv in cam.read_frames():
+-      self._send_yuv(yuv, cam.cur_frame_id, cam.cam_type_state, cam.stream_type)
++      self._send_yuv(yuv, cam.cur_frame_id, cam.cam_type_state, cam.stream_type, cam)
+       cam.cur_frame_id += 1
+       rk.keep_time()
+ 

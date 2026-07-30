@@ -1,0 +1,214 @@
+diff --git a/opendbc_repo/opendbc/can/dbc.py b/opendbc_repo/opendbc/can/dbc.py
+index b85a70c4..688be687 100644
+--- a/opendbc_repo/opendbc/can/dbc.py
++++ b/opendbc_repo/opendbc/can/dbc.py
+@@ -16,6 +16,7 @@ from opendbc.car.volkswagen.mlbcan import volkswagen_mlb_checksum
+ from opendbc.car.volkswagen.mqbcan import volkswagen_mqb_meb_checksum, volkswagen_mqb_meb_gen2_checksum, xor_checksum
+ from opendbc.car.tesla.teslacan import tesla_checksum
+ from opendbc.car.body.bodycan import body_checksum
++from opendbc.car.byd.bydcan import byd_checksum
+ from opendbc.car.psa.psacan import psa_checksum
+ 
+ 
+@@ -34,6 +35,7 @@ class SignalType:
+   TESLA_CHECKSUM = 11
+   PSA_CHECKSUM = 12
+   VOLKSWAGEN_MLB_CHECKSUM = 13
++  BYD_CHECKSUM = 14
+ 
+ 
+ @dataclass
+@@ -201,6 +203,17 @@ def get_checksum_state(dbc_name: str) -> ChecksumState | None:
+     return ChecksumState(8, 4, 7, 3, False, SignalType.BODY_CHECKSUM, body_checksum)
+   elif dbc_name.startswith("tesla_model3_party"):
+     return ChecksumState(8, -1, 0, -1, True, SignalType.TESLA_CHECKSUM, tesla_checksum, tesla_setup_signal)
++  elif dbc_name.startswith("byd_radar"):
++    # Veoneer private-bus radar: proprietary CRC8/SAE-J1850 + per-message DataID
++    # checksum, TWO per 64-byte frame (byte0 + byte32) - not expressible in
++    # opendbc's single-checksum-per-message model, and NOT the byd_ chassis 0xAF
++    # nibble (validated offline: private_checksum_validate.py, byd-can-bus). Without
++    # this branch the byd_ prefix wrongly applies byd_checksum -> every RADAR_TRACK
++    # frame fails checksum -> parser drops it (vl never updates) -> radar is dead.
++    # Trusted sensor on a silent MON tap; RadarInterface filters by conf+plausibility.
++    return None
++  elif dbc_name.startswith("byd_"):
++    return ChecksumState(8, 4, 56, 55, True, SignalType.BYD_CHECKSUM, byd_checksum)
+   elif dbc_name.startswith("psa_"):
+     return ChecksumState(4, 4, 7, 3, False, SignalType.PSA_CHECKSUM, psa_checksum)
+   return None
+diff --git a/opendbc_repo/opendbc/car/car.capnp b/opendbc_repo/opendbc/car/car.capnp
+index 014803fe..802299dd 100644
+--- a/opendbc_repo/opendbc/car/car.capnp
++++ b/opendbc_repo/opendbc/car/car.capnp
+@@ -732,6 +732,7 @@ struct CarParams {
+     fcaGiorgio @32;
+     rivian @33;
+     volkswagenMeb @34;
++    byd @35;
+   }
+ 
+   enum SteerControlType {
+diff --git a/opendbc_repo/opendbc/car/torque_data/override.toml b/opendbc_repo/opendbc/car/torque_data/override.toml
+index 5fd55a39..c882ab74 100644
+--- a/opendbc_repo/opendbc/car/torque_data/override.toml
++++ b/opendbc_repo/opendbc/car/torque_data/override.toml
+@@ -115,3 +115,6 @@ legend = ["LAT_ACCEL_FACTOR", "MAX_LAT_ACCEL_MEASURED", "FRICTION"]
+ "HYUNDAI_CASPER_EV"= [2.5, 2.5, 0.1]
+ "HYUNDAI_IONIQ_5_N" = [3.17, 2.71, 0.097]
+ "HYUNDAI_IONIQ_5_PE" = [1.75, 1.75, 0.15]
++
++# BYD angle based controllers
++"BYD_ATTO_3" = [nan, 2.0, nan]
+diff --git a/opendbc_repo/opendbc/car/values.py b/opendbc_repo/opendbc/car/values.py
+index f606249a..5a9a3a5d 100644
+--- a/opendbc_repo/opendbc/car/values.py
++++ b/opendbc_repo/opendbc/car/values.py
+@@ -1,5 +1,6 @@
+ from typing import get_args
+ from opendbc.car.body.values import CAR as BODY
++from opendbc.car.byd.values import CAR as BYD
+ from opendbc.car.chrysler.values import CAR as CHRYSLER
+ from opendbc.car.ford.values import CAR as FORD
+ from opendbc.car.gm.values import CAR as GM
+@@ -15,7 +16,7 @@ from opendbc.car.tesla.values import CAR as TESLA
+ from opendbc.car.toyota.values import CAR as TOYOTA
+ from opendbc.car.volkswagen.values import CAR as VOLKSWAGEN
+ 
+-Platform = BODY | CHRYSLER | FORD | GM | HONDA | HYUNDAI | MAZDA | MOCK | NISSAN | PSA | RIVIAN | SUBARU | TESLA | TOYOTA | VOLKSWAGEN
++Platform = BODY | BYD | CHRYSLER | FORD | GM | HONDA | HYUNDAI | MAZDA | MOCK | NISSAN | PSA | RIVIAN | SUBARU | TESLA | TOYOTA | VOLKSWAGEN
+ BRANDS = get_args(Platform)
+ 
+ PLATFORMS: dict[str, Platform] = {str(platform): platform for brand in BRANDS for platform in brand}
+diff --git a/opendbc_repo/opendbc/safety/safety.h b/opendbc_repo/opendbc/safety/safety.h
+index 36aa0c87..3e92c625 100644
+--- a/opendbc_repo/opendbc/safety/safety.h
++++ b/opendbc_repo/opendbc/safety/safety.h
+@@ -21,6 +21,7 @@
+ #include "safety/safety_volkswagen_pq.h"
+ #include "safety/safety_elm327.h"
+ #include "safety/safety_body.h"
++#include "safety/safety_byd.h"
+ 
+ // CAN-FD only safety modes
+ #ifdef CANFD
+@@ -54,6 +55,7 @@
+ #define SAFETY_STELLANTIS 25U
+ #define SAFETY_FAW 26U
+ #define SAFETY_BODY 27U
++#define SAFETY_BYD 35U
+ #define SAFETY_HYUNDAI_CANFD 28U
+ #define SAFETY_RIVIAN 33U
+ #define SAFETY_VOLKSWAGEN_MEB 34U
+@@ -422,6 +424,7 @@ int set_safety_hooks(uint16_t mode, uint16_t param) {
+     {SAFETY_HYUNDAI_LEGACY, &hyundai_legacy_hooks},
+     {SAFETY_MAZDA, &mazda_hooks},
+     {SAFETY_BODY, &body_hooks},
++    {SAFETY_BYD, &byd_hooks},
+     {SAFETY_FORD, &ford_hooks},
+     {SAFETY_RIVIAN, &rivian_hooks},
+ #ifdef CANFD
+diff --git a/opendbc_repo/opendbc/safety/tests/libsafety/carrot_test_prelude.h b/opendbc_repo/opendbc/safety/tests/libsafety/carrot_test_prelude.h
+new file mode 100644
+index 00000000..cb239e23
+--- /dev/null
++++ b/opendbc_repo/opendbc/safety/tests/libsafety/carrot_test_prelude.h
+@@ -0,0 +1,5 @@
++#include <string.h>
++#include <stdbool.h>
++// putui/puth/print now come from board/fake_stm.h in wip - no macro stub needed
++bool safety_tx_buffered_for_fwd = false;
++// carrot fork: test-build stubs for fw-side symbols
+diff --git a/openpilot/selfdrive/pandad/panda_safety.cc b/openpilot/selfdrive/pandad/panda_safety.cc
+index 32d129bc..768285c2 100644
+--- a/openpilot/selfdrive/pandad/panda_safety.cc
++++ b/openpilot/selfdrive/pandad/panda_safety.cc
+@@ -20,18 +20,30 @@ void PandaSafety::configureSafetyMode(bool is_onroad) {
+ }
+ 
+ void PandaSafety::updateMultiplexingMode() {
+-  // Initialize to ELM327 without OBD multiplexing for initial fingerprinting
++  // INLINE PANDA (no relay): ELM327 ACKs the camera but does NOT forward the chassis during
++  // fingerprinting -> the camera sees a live-but-starved bus -> per-module lost-comm DTCs
++  // (the rainbow dash). With SKIP_FW_QUERY we fingerprint passively (CAN only, no UDS), so keep
++  // the panda in SILENT (bus-monitoring, NO ACK) -> the camera sees a clean DEAD bus, exactly
++  // like a bypass wire unplugged, until we switch to the car (byd) safety mode.
++  bool skip_fw = getenv("SKIP_FW_QUERY") != nullptr;
+   if (!initialized_) {
+     prev_obd_multiplexing_ = false;
+-    panda_->set_safety_model(cereal::CarParams::SafetyModel::ELM327, 1U);
++    if (skip_fw) {
++      panda_->set_safety_model(cereal::CarParams::SafetyModel::SILENT);
++    } else {
++      panda_->set_safety_model(cereal::CarParams::SafetyModel::ELM327, 1U);
++    }
+     initialized_ = true;
+   }
+ 
+-  // Switch between multiplexing modes based on the OBD multiplexing request
++  // OBD multiplexing (also ELM327) only when actually running the FW query. When skipping,
++  // still ACK the request (card blocks on ObdMultiplexingChanged) but stay in SILENT.
+   bool obd_multiplexing_requested = params_.getBool("ObdMultiplexingEnabled");
+   if (obd_multiplexing_requested != prev_obd_multiplexing_) {
+-    const uint16_t safety_param = obd_multiplexing_requested ? 0U : 1U;
+-    panda_->set_safety_model(cereal::CarParams::SafetyModel::ELM327, safety_param);
++    if (!skip_fw) {
++      const uint16_t safety_param = obd_multiplexing_requested ? 0U : 1U;
++      panda_->set_safety_model(cereal::CarParams::SafetyModel::ELM327, safety_param);
++    }
+     prev_obd_multiplexing_ = obd_multiplexing_requested;
+     params_.putBool("ObdMultiplexingChanged", true);
+   }
+diff --git a/openpilot/selfdrive/pandad/pandad_api_impl.py b/openpilot/selfdrive/pandad/pandad_api_impl.py
+index 9da277d7..3bae4799 100644
+--- a/openpilot/selfdrive/pandad/pandad_api_impl.py
++++ b/openpilot/selfdrive/pandad/pandad_api_impl.py
+@@ -39,7 +39,10 @@ def can_list_to_can_capnp(can_msgs, msgtype='can', valid=True):
+   """
+   global _cached_writer_fields
+ 
+-  dat = log.Event.new_message(valid=valid, logMonoTime=int(time.monotonic() * 1e9))
++  # pycapnp 2.2.x's kwargs path creates cyclic garbage; set fields via attributes (GC is disabled in realtime procs)
++  dat = log.Event.new_message()
++  dat.valid = valid
++  dat.logMonoTime = int(time.monotonic() * 1e9)
+   can_data = dat.init(msgtype, len(can_msgs))
+ 
+   # Cache schema fields on first call
+diff --git a/panda/board/drivers/can_common.h b/panda/board/drivers/can_common.h
+index 755e30f6..2216e3e7 100644
+--- a/panda/board/drivers/can_common.h
++++ b/panda/board/drivers/can_common.h
+@@ -215,6 +215,14 @@ void ignition_can_hook(CANPacket_t *to_push) {
+       ignition_can_cnt = 0U;
+     }
+ 
++    // BYD exception (Yuan Plus / Atto 3)
++    if ((addr == 0x242) && (len == 8)) {
++      // DRIVE_STATE.GEAR (byte 5 low 3 bits): 1=P 2=R 3=N 4=D - only broadcast
++      // when the car is powered/ready, so any valid gear => ignition on.
++      ignition_can = (GET_BYTE(to_push, 5) & 0x07U) != 0U;
++      ignition_can_cnt = 0U;
++    }
++
+   }
+ }
+ 
+diff --git a/panda/board/main.c b/panda/board/main.c
+index 9770f836..4d65a5b9 100644
+--- a/panda/board/main.c
++++ b/panda/board/main.c
+@@ -113,6 +113,14 @@ void set_safety_mode(uint16_t mode, uint16_t param) {
+         current_board->set_can_mode(CAN_MODE_NORMAL);
+       }
+       can_silent = ALL_CAN_LIVE;
++      // Atto3: the private radar bus (openpilot bus 1) is a READ-ONLY tap. Put its
++      // FDCAN in bus-monitoring mode (CCCR.MON via the can_silent path: no ACK, no
++      // error frames) so the panda can never disturb the Veoneer radar<->camera
++      // link. can_num 1 never flips (harness flip only swaps 0<->2), so bit 1 is
++      // always the middle bus. RX (incl. FD) is unaffected by MON.
++      if ((mode_copy == SAFETY_BYD) && ((param & 0x10U) != 0U)) {
++        can_silent |= (1U << 1);
++      }
+       break;
+   }
+   can_init_all();
