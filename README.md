@@ -200,11 +200,14 @@ below are what a webcam cost here.
 - Aim the camera mechanically before you rely on calibration. Calibration corrects a small residual, not a
   large mount error.
 - Confirm the frame rate is steady at 20 Hz in real driving light, not on the bench in daylight.
-- **Read the V4L2 control defaults of your own module and set the ones that matter at launch.** The defaults
-  differ per module and a bad one is silent: you get a dark image or a low frame rate, not an error. Auto
-  controls that trade frame rate for exposure are the usual offender, because they only engage at night. The
-  values that fix one module do not carry to another, so dump your own controls and compare them against a
-  capture you know is good.
+- **Read the V4L2 control defaults of your own module and set the ones that matter.** The defaults differ
+  per module and a bad one is silent: you get a dark image or a low frame rate, not an error. Auto controls
+  that trade frame rate for exposure are the usual offender, because they only engage at night. The values
+  that fix one module do not carry to another, so dump your own controls and compare them against a capture
+  you know is good.
+- **Apply the control values on every camera open, not only at launch.** A USB re-enumeration resets the
+  module to its vendor defaults mid-drive, and a launch-time setting does not come back. The `camera.py` in
+  `port/pc/pc-host.patch` does this.
 
 ---
 

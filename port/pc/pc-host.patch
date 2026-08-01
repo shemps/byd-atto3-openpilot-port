@@ -21,12 +21,13 @@ index 825e0e44..2aea5cbc 100644
    def get_network_type(self):
      return NetworkType.wifi
 diff --git a/openpilot/tools/webcam/camera.py b/openpilot/tools/webcam/camera.py
-index 7926766c..5facc9ee 100644
+index 7926766..999c164 100644
 --- a/openpilot/tools/webcam/camera.py
 +++ b/openpilot/tools/webcam/camera.py
-@@ -1,39 +1,228 @@
+@@ -1,39 +1,252 @@
 +import glob
 +import os
++import subprocess
 +import numpy as np
  import av
  import cv2 as cv
@@ -112,7 +113,8 @@ index 7926766c..5facc9ee 100644
 +    # (by-id/by-path) must open exactly that device or fail loudly.
 +    if not str(camera_id).startswith("/"):
 +      candidates += sorted(d for d in glob.glob("/dev/video*"))
-+
+ 
+-    self.cap = cv.VideoCapture(camera_id)
 +    self.cap = None
 +    for dev in dict.fromkeys(str(c) for c in candidates):
 +      cap, size = _try_open(dev)
@@ -135,8 +137,7 @@ index 7926766c..5facc9ee 100644
 +    # dusk and sodium light; pinning one at 4600 K while the other tracks is a
 +    # mismatch that only shows up when the light changes, which is exactly when
 +    # the two model inputs must agree.
- 
--    self.cap = cv.VideoCapture(camera_id)
++
 +    # The wide stream comes out dark: measured on route 000000c0's recorded
 +    # video, its road region sits at luma 54.6 with 46.9% of it crushed under 32
 +    # and detail SD 19.3, against the road camera's 81.3 / 12.6% / 45.4 in the
@@ -151,10 +152,7 @@ index 7926766c..5facc9ee 100644
 +    wide_gain = os.environ.get("WEBCAM_WIDE_GAIN")
 +    if cam_type_state == "wideRoadCameraState" and wide_gain:
 +      self.cap.set(cv.CAP_PROP_GAIN, float(wide_gain))
- 
--    self.cap.set(cv.CAP_PROP_FRAME_WIDTH, 1280.0)
--    self.cap.set(cv.CAP_PROP_FRAME_HEIGHT, 720.0)
--    self.cap.set(cv.CAP_PROP_FPS, 25.0)
++
 +    # THE wide-camera darkness fix. The two modules ship different gamma defaults:
 +    # the road OS04A10 powers up at 320 (range 100..500), the wide SC200AI at 100
 +    # (range 72..500). UVC gamma is x100, so the wide was applying gamma 1.00 -
@@ -178,8 +176,9 @@ index 7926766c..5facc9ee 100644
 +    if cam_type_state == "wideRoadCameraState" and wide_gamma != "0":
 +      self.cap.set(cv.CAP_PROP_GAMMA, float(wide_gamma))
  
--    self.W = self.cap.get(cv.CAP_PROP_FRAME_WIDTH)
--    self.H = self.cap.get(cv.CAP_PROP_FRAME_HEIGHT)
+-    self.cap.set(cv.CAP_PROP_FRAME_WIDTH, 1280.0)
+-    self.cap.set(cv.CAP_PROP_FRAME_HEIGHT, 720.0)
+-    self.cap.set(cv.CAP_PROP_FPS, 25.0)
 +    # Match the road camera's backlight_compensation, which is 0. The two modules
 +    # power up differently (road 0 of 0..2, wide 1 of 0..3) and the ranges are not
 +    # even the same length, so "the same number" is not automatically "the same
@@ -194,7 +193,9 @@ index 7926766c..5facc9ee 100644
 +    # and median 104->144 while pushing blown highlights 0.5%->1.5%.
 +    if cam_type_state == "wideRoadCameraState":
 +      self.cap.set(cv.CAP_PROP_BACKLIGHT, 0)
-+
+ 
+-    self.W = self.cap.get(cv.CAP_PROP_FRAME_WIDTH)
+-    self.H = self.cap.get(cv.CAP_PROP_FRAME_HEIGHT)
 +    # Free-form escape hatch, applied LAST so it overrides everything above.
 +    # Point of it: qv4l2 (the V4L2 Test Bench GUI) is far faster for finding good
 +    # values than a capture-and-measure loop, but anything found there is undone
@@ -216,6 +217,29 @@ index 7926766c..5facc9ee 100644
 +        continue
 +      ok = self.cap.set(prop, float(val))
 +      print(f"{env}: {name.strip()}={val} {'ok' if ok else 'REFUSED by driver'}")
++
++    # Controls with NO OpenCV CAP_PROP. A launcher can set them with v4l2-ctl,
++    # but that runs once per launch. That is not enough. On one drive, a
++    # mid-drive USB re-enumeration (a loose hub cable) reset both cameras to
++    # vendor defaults, and nothing applied the values again. This block runs on
++    # every camera open. A camera that comes back from re-enumeration gets the
++    # controls back when camerad reopens it. Launcher lines can stay as a
++    # backstop. Both paths are idempotent.
++    #  - road: exposure_dynamic_framerate=0. The default of 1 trades frame rate
++    #    for night exposure (20 -> 3.8 Hz after dark). With 0 the rate stays
++    #    constant and AE buys darkness with gain. The wide module held 20.0 Hz
++    #    all night on its default, so it is not touched.
++    #  - wide: power_line_frequency=1 (50 Hz mains). The module ships the wrong
++    #    default and re-enumerates back to it.
++    raw = ("exposure_dynamic_framerate=0" if cam_type_state == "roadCameraState"
++           else "power_line_frequency=1")
++    r = subprocess.run(["v4l2-ctl", "-d", dev, f"--set-ctrl={raw}"],
++                       capture_output=True, text=True)
++    if r.returncode != 0:
++      print(f"note: v4l2-ctl --set-ctrl={raw} on {dev} failed: "
++            f"{(r.stderr or r.stdout).strip() or 'rc=' + str(r.returncode)}")
++    else:
++      print(f"v4l2-ctl {raw} ok on {dev}")
 +
 +    self.W = float(CANVAS_W)
 +    self.H = float(CANVAS_H)
