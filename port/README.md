@@ -100,15 +100,15 @@ python pc/can_imu_bridge.py            # publish
   not help while the camera clock disagrees with it.
 - **NV12 device layout.** The model's warp kernels expect row-stride-padded NV12. Publishing tight-packed
   rows shears every frame the model sees while the UI still looks correct.
-- **camera.py V4L2 handling**: MJPG forced, capture normalised to the 1928x1208 canvas, stable device paths
-  instead of `/dev/videoN` ordering, per-module control defaults, and `WEBCAM_*_CTRLS` to carry qv4l2-found
-  values into a launcher. The controls apply on every camera open, not only at launch. A USB re-enumeration
+- **camera.py V4L2 handling**: MJPG forced, capture normalized to the 1928x1208 canvas, and stable device
+  paths instead of `/dev/videoN` ordering. Per-module control defaults, with `WEBCAM_*_CTRLS` to carry
+  qv4l2-found values into a launcher. The controls apply on every camera open, not only at launch. A USB re-enumeration
   resets the module to its vendor defaults mid-drive, and a launch-time setting does not come back. Read
   section 9 of the top-level README before you use the values in it — they suit two specific modules and do
   not transfer.
 
 Not covered here, because it is rig-specific rather than port-specific: the launcher scripts, process
-pinning, and the GPS source. openpilot runs without GPS; a USB NMEA receiver on the `ubloxd` path is one way
+pinning, and the GPS source. openpilot runs without GPS. A USB NMEA receiver on the `ubloxd` path is one way
 to add one.
 
 ## Not here

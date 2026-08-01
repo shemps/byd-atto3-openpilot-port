@@ -1,7 +1,7 @@
 # BYD Atto 3 — openpilot porting reference
 
-This document gives the wiring, the bus topology, the signal definitions, the control messages, and the panda
-requirements to port openpilot to a BYD Atto 3 (Yuan Plus EV).
+This document gives the data to port openpilot to a BYD Atto 3 (Yuan Plus EV). It covers the wiring, the
+bus topology, the signal definitions, the control messages, and the panda requirements.
 
 > **No warranty. No claims. Use at your own risk.** This is a personal notebook from one car, published in
 > case it is useful. Nothing here is claimed to be correct, complete, or safe, and nothing here is claimed to
@@ -13,10 +13,10 @@ All observations come from one car, a 2024 RHD export build.
 
 https://github.com/user-attachments/assets/0a8011b6-2d72-4bb8-8523-d18c12993d65
 
-The comma 4 does not ship to my location. This port therefore runs on an x86 mini-PC with a USB webcam for
-the road camera and a comma red panda for the CAN interface, spliced inline at the camera connector. No comma
-device is in the car. Two consequences get their own sections: the road camera is a webcam (section 9), and
-the PC has no IMU, so the car's own IMU is bridged from CAN (section 10).
+The comma 4 does not ship to my location. This port therefore runs on an x86 mini-PC, with a USB webcam as
+the road camera. A comma red panda, spliced inline at the camera connector, is the CAN interface. No comma
+device is in the car. Two consequences get their own sections. The road camera is a webcam (section 9). The
+PC has no IMU, so the port bridges the car's own IMU from CAN (section 10).
 
 [MIT licensed](LICENSE). Not affiliated with BYD or comma.ai — see [DISCLAIMER.md](DISCLAIMER.md).
 
@@ -203,7 +203,7 @@ below are what a webcam cost here.
 - **Read the V4L2 control defaults of your own module and set the ones that matter.** The defaults differ
   per module and a bad one is silent: you get a dark image or a low frame rate, not an error. Auto controls
   that trade frame rate for exposure are the usual offender, because they only engage at night. The values
-  that fix one module do not carry to another, so dump your own controls and compare them against a capture
+  that fix one module do not carry to another. Dump your own controls and compare them against a capture
   you know is good.
 - **Apply the control values on every camera open, not only at launch.** A USB re-enumeration resets the
   module to its vendor defaults mid-drive, and a launch-time setting does not come back. The `camera.py` in
@@ -232,8 +232,8 @@ Publish these as `gyroscope` and `accelerometer` `SensorEventData`.
 - Roll and pitch stay weakly observable without vertical accel. Yaw and the planar dynamics are complete,
   which is what lateral control and longitudinal control need.
 
-Validate the three signs against your own drive log before you drive on them: yaw against steering angle,
-`Ax` against d(speed)/dt, `Ay` against v × yaw. locationd cross-checks yaw against camera odometry and
+Validate the three signs against your own drive log before you drive on them. Check yaw against steering
+angle, `Ax` against d(speed)/dt, and `Ay` against v × yaw. locationd cross-checks yaw against camera odometry and
 rejects a wrong sign, so a flipped yaw shows up as `livePose` never becoming valid.
 
 Take `yawRate` and `aEgo` for carState from the same two messages.

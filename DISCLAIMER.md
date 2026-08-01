@@ -24,7 +24,7 @@ Specifically:
 
 - Nothing here is claimed to be correct, complete, current, or safe.
 - Nothing here is claimed to work on your vehicle, or on any vehicle.
-- No statement about a signal, an address, a scale factor, a limit, or a behaviour is a guarantee that your
+- No statement about a signal, an address, a scale factor, a limit, or a behavior is a guarantee that your
   vehicle behaves the same way. Vehicles differ by market, model year, trim, and firmware version, and they
   change with software updates.
 - Numbers, measurements, and observations may be wrong, may have been superseded, and are not reproducible
@@ -58,9 +58,9 @@ it in full.
 
 ## Not affiliated, not endorsed
 
-The author is an independent private individual with no connection to any of the organisations named here.
+The author is an independent private individual with no connection to any of the organizations named here.
 
-This project is not affiliated with, authorised by, endorsed by, sponsored by, or connected to BYD Auto Co.,
+This project is not affiliated with, authorized by, endorsed by, sponsored by, or connected to BYD Auto Co.,
 Ltd., comma.ai, Veoneer, Magna, Robert Bosch GmbH, or any vehicle manufacturer, supplier, or their
 subsidiaries.
 
@@ -80,8 +80,8 @@ The code in [`port/`](port/) is derived work. It builds on, and in places is ada
 - bukapilot by iXcess / KommuAI, an openpilot fork, which is the origin of the earlier BYD work this port
   started from.
 
-Copyright in those portions remains with their respective authors under their respective licences. The MIT
-licence in [LICENSE](LICENSE) covers this repository's own contribution and does not override or extend to
+Copyright in those portions remains with their respective authors under their respective licenses. The MIT
+license in [LICENSE](LICENSE) covers this repository's own contribution and does not override or extend to
 any third-party rights. If you believe material here is used incorrectly or should be attributed
 differently, please open an issue and it will be corrected or removed.
 
