@@ -51,10 +51,33 @@ otherwise supply.
 10. Bridge the IMU from CAN (section 10).
 11. Build and flash the panda safety (section 11).
 
-The code that implements this manual is in [`port/`](port/). Related upstream work:
-[opendbc PR #3337](https://github.com/commaai/opendbc/pull/3337) (Atto 3),
-[PR #3352](https://github.com/commaai/opendbc/pull/3352) (Sealion 7),
-[issue #2065](https://github.com/commaai/opendbc/issues/2065) (harness).
+The code that implements this manual is in [`port/`](port/).
+
+## Credits
+
+This port is derived work. What it takes, and from whom:
+
+| Source | Taken |
+|---|---|
+| [openpilot](https://github.com/commaai/openpilot) and [opendbc](https://github.com/commaai/opendbc) — comma.ai, MIT | The stack this port plugs into |
+| [bukapilot](https://github.com/kommuai/bukapilot) — iXcess / KommuAI | The BYD chassis checksum in section 4. Their `byd_checksum` is a nibble scheme with key `0xAF`. The one-line form in section 4 is an algebraic simplification of it and gives the same byte |
+| [opendbc PR #2429](https://github.com/commaai/opendbc/pull/2429) — dotslashofficial | The `opendbc/car/byd/` brand structure and `byd_general_pt.dbc`, which carried the bukapilot work into opendbc |
+| [opendbc PR #3337](https://github.com/commaai/opendbc/pull/3337) — lukasloetkolben | `byd_atto3.dbc`, the chassis DBC in `port/`. Section 5 marks the one signal name in it that this manual treats as unconfirmed |
+| [tembikaipilot](https://github.com/danielks23/tembikaipilot) — danielks23 | The Veoneer FD radar track layout in `byd_radar_fd.dbc`, section 8. Two fields are corrected here |
+| [carrotpilot](https://github.com/ajouatom/openpilot) — ajouatom | The fork this port was developed on before openpilot 0.11.2 |
+| [opendbc Subaru support](https://github.com/commaai/opendbc/tree/master/opendbc/car/subaru) — comma.ai | The lead to the private-bus checksum scheme, section 8. EyeSight uses a Veoneer camera |
+
+Related BYD work, not used in this port:
+
+- [opendbc PR #3352](https://github.com/commaai/opendbc/pull/3352) — martinl, BYD Sealion 7 port.
+- [opendbc PR #2058](https://github.com/commaai/opendbc/pull/2058) — yysnet, initial BYD brand port.
+- [opendbc issue #2065](https://github.com/commaai/opendbc/issues/2065) — qzwf, BYD Atto 3 harness. The
+  pinout in section 1 is read from the BYD *Definition of Terminals* document, not from this thread.
+- [opendbc issue #2017](https://github.com/commaai/opendbc/issues/2017) — the BYD port bounty.
+
+Copyright in the borrowed portions stays with their authors under their own licences. See
+[DISCLAIMER.md](DISCLAIMER.md). If anything here is attributed wrongly, open an issue and it will be
+corrected.
 
 ---
 

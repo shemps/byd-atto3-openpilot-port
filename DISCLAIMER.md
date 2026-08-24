@@ -75,11 +75,13 @@ The code in [`port/`](port/) is derived work. It builds on, and in places is ada
 
 - [openpilot](https://github.com/commaai/openpilot) and [opendbc](https://github.com/commaai/opendbc) by
   comma.ai, MIT licensed.
-- [carrotpilot](https://github.com/ajouatom/carrotpilot) by ajouatom, an openpilot fork. This port was
+- [carrotpilot](https://github.com/ajouatom/openpilot) by ajouatom, an openpilot fork. This port was
   developed on that fork until 2026-08-14. The files in `port/` now target released openpilot 0.11.2, but
   parts of them were written against carrotpilot first.
-- bukapilot by iXcess / KommuAI, an openpilot fork, which is the origin of the earlier BYD work this port
-  started from.
+- [bukapilot](https://github.com/kommuai/bukapilot) by iXcess / KommuAI, an openpilot fork, which is the
+  origin of the earlier BYD work this port started from, including the chassis checksum.
+- [opendbc PR #2429](https://github.com/commaai/opendbc/pull/2429) by dotslashofficial, which carried that
+  work into opendbc as the `opendbc/car/byd/` brand and `byd_general_pt.dbc`.
 - [tembikaipilot](https://github.com/danielks23/tembikaipilot) by danielks23, a bukapilot fork. Its
   `byd_radar_fd.dbc` is the source of the Veoneer FD radar track layout in `port/opendbc/dbc/byd_radar_fd.dbc`.
   Two fields are corrected here, as section 8 of the manual describes. The rest of the layout is theirs.
