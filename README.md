@@ -18,9 +18,8 @@ the road camera. A comma red panda, spliced inline at the camera connector, is t
 device is in the car. Two consequences get their own sections. The road camera is a webcam (section 9). The
 PC has no IMU, so the port bridges the car's own IMU from CAN (section 10).
 
-**The port runs on released openpilot 0.11.2, on a branch named `byd-atto3`.** It ran on a `carrotpilot`
-fork until 2026-08-14. That fork is retired. The files in [`port/`](port/) are the 0.11.2 files and call
-upstream APIs only. Where 0.11.2 changed an API or dropped a field, the code says so at the line.
+**The port runs on released openpilot 0.11.2, on a branch named `byd-atto3`.** The files in
+[`port/`](port/) are the 0.11.2 files and use upstream APIs only.
 
 [MIT licensed](LICENSE). Not affiliated with BYD or comma.ai — see [DISCLAIMER.md](DISCLAIMER.md).
 
@@ -64,8 +63,8 @@ bus. Sections 2 to 7 refer to this bus.
 
 **Private CAN** (pins 3/7) is CAN-FD with a data phase near 2 Mbit/s. It carries the MVS4 camera and the
 77V12FLR radar. Use this bus to read radar tracks (section 8). The wire also carries about 72 classic-format
-CAN IDs alongside the FD frames. Their source is not established here, so do not assume the bus has only two
-nodes.
+CAN IDs with the FD frames. The source of those IDs is not established. Do not assume that the bus has only
+two nodes.
 
 Add termination to the chassis CAN at the panda. The panda breaks the bus at the camera connector, which
 separates the camera from the vehicle-side termination.
@@ -118,28 +117,23 @@ openpilot stays offroad without a CAN ignition hook.
 | Blind spot | `BSD_RADAR` `0x418` | |
 | Cruise state | `ACC_HUD_ADAS` `0x32D` | Camera bus. `ACC_STATE`: 2 available, 3 and 5 enabled, 7 error |
 
-### Driver override — do not use `DRIVER_EPS_TORQUE`
+### Driver override
 
 **Take the driver torque from `0x1FC STEERING_TORQUE.DRIVER_TORQUE`, at 0.1 Nm/LSB.**
 
-`STEER_MODULE_2.DRIVER_EPS_TORQUE` (`0x11F`) is the obvious candidate and it is wrong. The car masks that
-signal while the EPS is in state 10, which is the exact window openpilot is steering. Override therefore
-never fires when it matters. On one route the driver fought a wrong turn at 23 to 29 Nm while
-`DRIVER_EPS_TORQUE` stayed in 0 to 34 counts of noise, and no override event was raised.
+The car masks `STEER_MODULE_2.DRIVER_EPS_TORQUE` (`0x11F`) while the EPS is in state 10, which is the window
+openpilot is steering. That signal therefore cannot carry override. Log it if you want it. Do not drive
+control off it.
 
-Threshold used here: **18 Nm**. Measured basis on this car: `DRIVER_TORQUE` runs a median of 1.3 Nm while
-engaged over 18.8 minutes, so 18 Nm clears hands-on noise, and it caught 5 real override events, all
-sustained, median 6.3 s. Fit your own threshold.
+Threshold used here: **18 Nm**. `DRIVER_TORQUE` runs a median of 1.3 Nm while engaged, so 18 Nm clears
+hands-on noise and still catches a sustained fight. Fit your own threshold.
 
 Sign convention, measured on manual turns: **positive is left**. Left turns read +17.9 Nm median, right
 turns −16.6 Nm.
 
-`DRIVER_EPS_TORQUE` is still worth logging. Do not drive control off it.
-
-**Do not set `steeringDisengage` on this car.** It is a NO_ENTRY plus an immediate user disable. Driven off
-the masked signal it fired with nobody touching the wheel, and it blocked engagement outright.
-`steeringPressed` above raises the soft lateral-override alert, which is the correct response: openpilot
-yields lateral to the driver and resumes when the driver relaxes.
+**Do not set `steeringDisengage` on this car.** It is a NO_ENTRY plus an immediate user disable.
+`steeringPressed` is the correct response: openpilot yields lateral to the driver and resumes when the
+driver relaxes.
 
 ### EPS state
 
@@ -155,11 +149,10 @@ bit 3 is constant 1 in every capture.
 | 10 | ACTIVATED | Actuating |
 | 11 | PREPARED + ACTIVATED | Dropout signature |
 
-**State 11 needs a debounce of about 0.5 s. It is transitional, not automatically a fault.** It appears for
-100 to 200 ms whenever the `0x1E2` source changes or the stream briefly gaps, including at the engage
-handover. Reporting it instantly is a deadlock: every state-11 onset landed 0.22 to 0.24 s after an LKAS
-press, so the `steerTempUnavailable` NO_ENTRY refused the very engagement that would have started the
-openpilot stream. A real latched dropout persists indefinitely. Section 5 covers the fault itself.
+**Debounce state 11 for about 0.5 s.** State 11 is transitional and is not always a fault. It occurs for 100
+to 200 ms when the `0x1E2` source changes, and when the stream has a short gap. This includes the engage
+handover. Without the debounce, the `steerTempUnavailable` NO_ENTRY prevents engagement, because state 11
+starts before openpilot transmits. A true latched dropout stays set. Section 5 gives the fault itself.
 
 ### Pedals and speed
 
@@ -167,19 +160,18 @@ openpilot stream. A real latched dropout persists indefinitely. Section 5 covers
 and does not follow the pedal. Longitudinal control does not engage if you use `RAW_THROTTLE`.
 
 **Read `brakePressed` from the same signal the panda reads.** Both sides here read
-`DRIVE_STATE.BRAKE_PRESSED` (`0x242`). If the two disagree, a light brake graze clears one engage latch and
-not the other, and openpilot raises "Controls Mismatch".
+`DRIVE_STATE.BRAKE_PRESSED` (`0x242`). If the two signals differ, a light touch on the brake clears one
+engage latch and not the other. openpilot then shows "Controls Mismatch".
 
-**Vehicle speed.** `WHEELSPEED_CLEAN` (`0x1F0`) is a 16-bit raw count. This port scales it at
-**0.0713 km/h per count**, which is the DBC in `port/`. An earlier revision of this document said 0.1 km/h
-per count with a separate cluster factor. That pairing is superseded — use the DBC value.
+**Vehicle speed.** `WHEELSPEED_CLEAN` (`0x1F0`) is a 16-bit raw count. The scale is **0.0713 km/h per
+count**. The DBC in `port/` has this scale.
 
-One deliberate inconsistency: the panda safety define keeps **0.0758**. Safety only gates the >3 m/s
-angle-error check with it, and the number is kept byte-identical to the validated build. Do not "fix" it to
-match the DBC without re-validating the safety tests.
+The panda safety define keeps **0.0758**. This value is intentional. Safety uses it only to gate the >3 m/s
+angle-error check, and the value stays the same as the validated build. Do not change it to match the DBC
+before you run the safety tests again.
 
-**Steer ratio 19.8** is what this car settled on. It is fitted against the speed scale above, so the two are
-a pair — refit both if you change either.
+**Steer ratio 19.8.** The steer ratio and the speed scale above are a pair. Fit both again if you change
+one.
 
 ---
 
@@ -215,48 +207,49 @@ if the message stops at standstill. `STEER_REQ = 1` alone does not clear this st
 
 Report `0x1FC` state 11 as `steerFaultTemporary`, **after the ~0.5 s debounce in section 3**.
 
-### The EPS gives up in tight turns
+### EPS limits
 
-The EPS will not hold every angle openpilot can ask for. In a tight turn it stops following the command,
-then drops out of lane keeping and hands the wheel back mid-corner. openpilot reports this as
-"Turn Exceeds Steering Limit" followed by "Steering Assist Temporarily Unavailable". Both alerts are
-downstream of one event.
+The EPS does not hold every angle openpilot commands. In a tight turn the EPS stops to follow the command.
+The EPS then leaves lane keeping and returns the wheel to the driver in the middle of the corner. openpilot
+shows "Turn Exceeds Steering Limit", then "Steering Assist Temporarily Unavailable". One event causes both
+alerts.
 
-**The EPS announces it about 0.5 s early, on a 2-bit field at `0x1FC` bits 46–47.** The measured sequence,
-identical every time:
+**The EPS reports the condition about 0.5 s early, on a 2-bit field at `0x1FC` bits 46–47.** The measured
+sequence is the same each time:
 
-1. The field goes from 0 to 1.
-2. The EPS freezes the `TARGET_ANGLE` it echoes on `0x1FC` and lets `MAIN_TORQUE` decay. The wheel stalls
-   while openpilot keeps winding its command — up to 52° past the frozen target.
-3. About 0.5 s later the EPS zeroes `TARGET_ANGLE` and latches state 11. Assist is gone.
+1. The field changes from 0 to 1.
+2. The EPS holds the `TARGET_ANGLE` it echoes on `0x1FC` at a constant value, and `MAIN_TORQUE` decreases.
+   The wheel stops. openpilot continues to increase its command, to as much as 52° past the held target.
+3. About 0.5 s later the EPS sets `TARGET_ANGLE` to 0 and latches state 11. Steering assist stops.
 
-Across 14 routes the field took value 1 **nine times, every one at 148° to 244° of wheel angle and 14 to
-24 km/h**. It took value 2 thirteen times — eleven of them within 15° of straight-ahead, mostly with zero
-motor effort — which is a different and so far harmless trip. While engaged, `MAIN_TORQUE` never leaves the
-range −252 to +251, which is exactly the window this port declares in `0x1E2`. Whether the declaration sets
-that ceiling is not established.
+Across 14 routes the field showed value 1 **nine times. At each one the wheel angle was 148° to 244° and the
+speed was 14 to 24 km/h.** The field showed value 2 thirteen times. Eleven of those were within 15° of
+straight ahead, and most had zero motor effort. Value 2 is a different condition with no known effect.
 
-Fitting the nine trip points, the boundary is **not linear in speed**. It is closest to a constant yaw rate:
+While openpilot steers, `MAIN_TORQUE` stays in the range −252 to +251. This is the same window the port
+declares in `0x1E2`. It is not established that the declaration sets the limit.
 
-| Candidate invariant | Value at the trip | Spread |
+The boundary is **not linear with speed**. A fit of the nine points is closest to a constant yaw rate:
+
+| Candidate invariant | Value at the limit | Spread |
 |---|---|---|
-| Wheel angle alone | 177° | 16 % |
+| Wheel angle only | 177° | 16 % |
 | **Angle × speed (yaw rate)** | **19.1 deg/s** | **8.2 %** |
-| Angle × speed² (lateral accel) | 1.94 m/s² | 22 % |
+| Angle × speed² (lateral acceleration) | 1.94 m/s² | 22 % |
 
-A log-log fit gives angle ∝ v^−0.73. As a working rule: **max wheel angle ≈ 3580 / speed in km/h**. All nine
-points sit inside 14 to 24 km/h, so treat the exponent as unconfirmed outside that band.
+A log-log fit gives angle proportional to v^−0.73. Use this rule: **maximum wheel angle = 3580 / speed in
+km/h**. All nine points are between 14 and 24 km/h. Do not apply the exponent outside that range.
 
-Two consequences for a port. First, openpilot's own limiter is more permissive than the car. The vehicle-model
-limiter in `values.py` allows about 3.6 m/s² of lateral acceleration — ISO plus a banked-road roll allowance —
-against an EPS that quits near 1.3 to 2.5 m/s². openpilot will command turns this EPS will not deliver.
-Second, nothing in openpilot reads the warning, so the command runs tens of degrees past a target the EPS
-already refused, and the driver inherits that step at handover.
+Two results apply to a port. First, the openpilot limit is higher than the car limit. The vehicle-model
+limiter in `values.py` permits about 3.6 m/s² of lateral acceleration, which is the ISO value plus an
+allowance for road bank. The EPS stops near 1.3 to 2.5 m/s². openpilot therefore commands turns that this
+EPS does not make. Second, openpilot does not read the field. The command continues past a target that the
+EPS refused, and the driver receives that step at the handover.
 
-**On the naming.** `byd_atto3.dbc` calls the field `TORQUE_TEMP_FAILED` and labels the values
-`1 "TooLarge" 2 "TooFast"`. That label comes from opendbc PR #3337, which is an unmerged draft. No BYD
-document, no EPS diagnostic code, and no other fork corroborates it. The behaviour above is measured on this
-car and does not depend on the label. The semantics do. Treat the name as a hypothesis.
+**Name of the field.** `byd_atto3.dbc` calls the field `TORQUE_TEMP_FAILED`, and labels the values
+`1 "TooLarge"` and `2 "TooFast"`. That label comes from opendbc PR #3337, an unmerged draft. No BYD
+document, no EPS diagnostic code, and no other fork confirms it. The measurements above do not depend on the
+label. The meaning of the two values does. Treat the name as unconfirmed.
 
 ---
 
@@ -276,12 +269,12 @@ off. With `pcmCruise = False` openpilot engages only on `buttonEnable`, so map t
 event. Do not assign `ret.buttonEnable` inside `update()` — `interfaces.py` overwrites it afterwards, and
 the write is dead.
 
-**0.11.2 dropped four longitudinal knobs** the earlier port used: `vEgoStopping`, `vEgoStarting`,
-`startAccel`, and `startingState`. `longcontrol` no longer enters a starting state, so the launch kick is
-gone. Move-off now relies on `CC.cruiseControl.resume`, the launch snap-to-zero in the car controller, and a
-launch jerk limit. Upstream also deprecated `longitudinalTuning.kpBP`/`kpV` — every car builds its PID with
-kp = 0. The `0x32E` command is a feedforward request that the car's IPB closes with about 0.5 s of lag, so
-kf = 1 does the work and ki trims the model error.
+**openpilot 0.11.2 has no `vEgoStopping`, `vEgoStarting`, `startAccel` or `startingState`.** `longcontrol`
+does not enter a starting state, so there is no launch kick. Move-off uses `CC.cruiseControl.resume`, the
+launch snap-to-zero in the car controller, and a launch jerk limit. 0.11.2 also has no
+`longitudinalTuning.kpBP` or `kpV`. Every car builds its PID with kp = 0. The `0x32E` command is a
+feedforward request, and the car's IPB closes its own loop with about 0.5 s of lag. Use kf = 1, and let ki
+trim the model error.
 
 ---
 
@@ -291,9 +284,9 @@ Send `0x316` so the cluster continues to show the LKAS state while openpilot dri
 fields through and override only the LKAS state fields. The frame needs a `COUNTER` and the section-4
 checksum.
 
-The ADAS modules validate this frame's full bit pattern and fail-safe on any mismatch, with latched DTCs
-across eight modules. The DBC in `port/` names the previously unnamed bits `PT1` to `PT4` so a decode and
-repack round-trips byte-exact. An unnamed bit packs as 0, which is enough to trip the check.
+The ADAS modules check the full bit pattern of this frame. A mismatch puts them in fail-safe and sets
+latched DTCs in eight modules. The DBC in `port/` names the unnamed bits `PT1` to `PT4`, so a decode and a
+repack give the same bytes. An unnamed bit packs as 0, which is sufficient to fail the check.
 
 ---
 
@@ -313,20 +306,19 @@ BUMPER_TO_RADAR_ORIGIN_M = 3.60   # front overhang 885 mm + wheelbase 2720 mm
 dRel = LONG_DIST - BUMPER_TO_RADAR_ORIGIN_M
 ```
 
-Published raw, every radar lead reads about 3.6 m too far. Measured against four leads of known body width,
-the raw range ran +3.21, +4.11, +2.04 and +3.62 m long — a Corolla taxi, a CR-V, a Yaris-class hatch and a
-box truck — while the vision lead sat within 0.1 to 0.8 m of the same geometry. Cars were biased as much as
-the truck, which rules out a reflection point on the target and leaves the sensor's own origin. Over 7863
-radar-matched frames the radar-versus-vision disagreement went from **+4.18 m raw to +0.43 m** in the 0 to
+Without the correction, each radar lead reads about 3.6 m too far. Measurement against four leads of known
+body width gave errors of +3.21, +4.11, +2.04 and +3.62 m — a Corolla taxi, a CR-V, a Yaris-class hatch and
+a box truck. The vision lead stayed within 0.1 to 0.8 m of the same geometry. The error on the cars is the
+same as the error on the truck. This shows the sensor origin, not a reflection point on the target. Over
+7863 radar-matched frames the radar-to-vision difference changed from **+4.18 m to +0.43 m** in the 0 to
 12 m stopping band.
 
-Two knock-ons, both deliberate. The maximum-range gate now also drops non-physical negatives, because a
-target touching the bumper reads about 3.6 raw. And the cut-in window becomes a real 20 m of road instead of
-the 16.4 m it silently was.
+The correction has two intentional effects. The maximum-range gate also removes negative ranges, because a
+target at the bumper reads about 3.6 raw. The cut-in window becomes a true 20 m of road, instead of the
+16.4 m it was before.
 
-`veoneer_tracks.py` keeps raw values on purpose. It is the decode reference the bench replay validator
-scores, so its numbers must stay comparable with the validated report. The conversion lives in
-`radar_interface.py`.
+`veoneer_tracks.py` keeps raw values. It is the decode reference that the bench replay validator scores, so
+its numbers must stay comparable with the validated report. The conversion is in `radar_interface.py`.
 
 ---
 
@@ -385,11 +377,10 @@ Take `yawRate` and `aEgo` for carState from the same two messages.
 ## 11. Panda and safety
 
 - TX allowlist: `0x1E2`, `0x316`, `0x32E`.
-- The safety mode lives at `opendbc/safety/modes/byd.h` in 0.11.2. It was `opendbc/safety/safety/safety_byd.h`
-  in the older tree. `SAFETY_BYD` and the `byd_hooks` extern go in `opendbc/safety/declarations.h`, not in
-  `safety.h`.
-- In this tree the `{SAFETY_BYD, &byd_hooks}` entry sits inside `#ifdef ALLOW_DEBUG`. Build the panda with
-  `ALLOW_DEBUG`, or move the entry out of that block yourself and understand why it was there.
+- The safety mode goes at `opendbc/safety/modes/byd.h`. Put `SAFETY_BYD` and the `byd_hooks` extern in
+  `opendbc/safety/declarations.h`, not in `safety.h`.
+- The `{SAFETY_BYD, &byd_hooks}` entry is inside `#ifdef ALLOW_DEBUG`. Build the panda with `ALLOW_DEBUG`,
+  or move the entry out of that block. If you move it, first find out why it is there.
 - Set the angle limits and accel limits from your own measurements. Do not inherit limits from another
   BYD platform, and do not inherit the ones here.
 

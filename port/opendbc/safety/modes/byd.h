@@ -2,14 +2,12 @@
 
 #include "opendbc/safety/declarations.h"
 
-// BYD ATTO 3 ONLY. Ported 2026-08-01 from the on-car-validated carrot-tree
-// safety_byd.h (M9 wip, Atto3-only rewrite of 2026-07-17 + brake-debounce fix
-// 0d6a81e) onto the modern opendbc safety layout. Design = the VALIDATED
-// PASSTHROUGH model: the camera's own 0x1E2/0x316/0x32E are FORWARDED to the
-// car while openpilot is not in control and blocked only while it is (plus
-// AEB pass-through on 0x32E). This pairs with a carcontroller that sends
-// regenerated frames ONLY while engaged - do not mix with the always-block
-// check_relay design (both sources would collide on the bus while disengaged).
+// BYD ATTO 3 only. This file uses the passthrough design: the camera 0x1E2, 0x316 and
+// 0x32E go to the car while openpilot is not in control, and this file blocks them only
+// while openpilot is in control. AEB on 0x32E always passes.
+// The car controller must send its own frames only while engaged. Do not use this file
+// with the always-block check_relay design. With that design both sources transmit while
+// openpilot is disengaged, and they collide on the bus.
 // No-MVS4 mode: panda spliced inline camera<->car, engage via LKAS-button latch.
 
 #define BYD_CANADDR_LKAS_HUD          0x316U   // camera HUD/arming frame (validated-bit passthrough)
@@ -58,13 +56,11 @@ static bool byd_cam_acc_aeb = false;         // last camera 0x32E was AEB-grade 
 // the driver toggled the button back off. Now a latch without a command stream is inert:
 // the camera keeps steering the car exactly as if openpilot were not there.
 #define BYD_TX_ACTIVE_TIMEOUT_US 200000U   // 200 ms = 10 missed 50 Hz lateral frames
-// Grace window after controls_allowed goes true, during which the camera is blocked
-// even before our first TX lands. Without it the handover overlaps: openpilot starts
-// streaming while the camera's own 0x1E2 is still being forwarded, the EPS sees TWO
-// sources and faults into the STATE=11 latch ~250 ms after engage (in-car
-// 2026-08-02, route 000000ef: first engage clean for 29 s, every re-engage faulted).
-// The wip blocked from the instant controls_allowed went true and never overlapped;
-// this keeps that behavior AND still releases the camera if openpilot never streams.
+// Grace window after controls_allowed becomes true. The camera stays blocked in this
+// window, before the first openpilot frame arrives. Without the window the handover
+// overlaps: openpilot starts to transmit while the camera 0x1E2 still goes to the car,
+// the EPS sees two sources, and it latches state 11 about 250 ms after the engage.
+// The window also releases the camera if openpilot never transmits.
 #define BYD_ENGAGE_GRACE_US      500000U   // 500 ms
 static uint32_t byd_lat_tx_ts = 0U;        // last accepted 0x1E2/0x316 TX
 static uint32_t byd_acc_tx_ts = 0U;        // last accepted 0x32E TX
@@ -102,10 +98,10 @@ static void byd_rx_hook(const CANPacket_t *msg) {
     if (msg->addr == BYD_CANADDR_PEDAL) {
       gas_pressed = (msg->data[0] != 0U);
     } else if (msg->addr == BYD_CANADDR_DRIVE_STATE) {
-      // Debounced brake bit (byte4 bit5, DBC BRAKE_PRESSED 37|1@0+, 50 Hz; car threshold
-      // ~9 pedal counts, validated over 46k v3-log frames). carstate reads THIS SAME bit,
-      // so the panda latch and the carstate mirror cannot desync on a light brake graze
-      // (the 2026-07-17 "Controls Mismatch" root cause, SESSION §5a).
+      // Debounced brake bit, byte 4 bit 5, DBC BRAKE_PRESSED 37|1@0+, 50 Hz. The car
+      // threshold is about 9 pedal counts. carstate reads this same bit, so the panda latch
+      // and the carstate latch cannot differ on a light touch of the brake. A difference
+      // gives "Controls Mismatch".
       brake_pressed = ((msg->data[4] >> 5) & 0x1U) != 0U;
       if (brake_pressed) {
         byd_btn_latch = false;
@@ -114,8 +110,8 @@ static void byd_rx_hook(const CANPacket_t *msg) {
       int speed_raw = ((msg->data[1] & 0x0FU) << 8) | msg->data[0];
       vehicle_moving = (speed_raw != 0);
     } else if (msg->addr == BYD_CANADDR_WHEELSPEED_CLEAN) {
-      // vehicle_speed drives the speed-gated angle-error check. Before 2026-07-17 it
-      // was NEVER fed, so the checks interpolated at 0 m/s forever (SAFETY_REVIEW H4).
+      // vehicle_speed drives the speed-gated angle-error check. This message must feed it,
+      // or the checks interpolate at 0 m/s permanently.
       int speed_raw = (msg->data[1] << 8) | msg->data[0];
       UPDATE_VEHICLE_SPEED(speed_raw * BYD_SPEED_RAW_TO_MS);
     } else if (msg->addr == BYD_CANADDR_STEER_MODULE_2) {
@@ -140,11 +136,10 @@ static void byd_rx_hook(const CANPacket_t *msg) {
             // wheel anywhere else then fails the rate check on frame one, and the
             // checker's violation-reset (anchor := measured) turns the rate limit
             // into "stay within 4 deg of the driver's wheel" - a permanent block
-            // while controlsd ramps toward the model path (in-car 2026-08-02
-            // route 000000f7: 37 consecutive active frames blocked at re-engage,
-            // EPS starved into STATE=11, soft disable). Upstream avoids this by
-            // running the checker on every frame; our REQ=0 skip (deliberate,
-            // see tx hook) means the edge must re-anchor explicitly instead.
+            // while controlsd moves toward the model path. The EPS then loses its stream
+            // and latches state 11. Upstream avoids this because it runs the checker on
+            // every frame. This file skips the checker when REQ=0, which is deliberate.
+            // See the tx hook. The edge must therefore re-anchor here.
             desired_angle_last = SAFETY_CLAMP(angle_meas.values[0], -3900, 3900);
           }
         }
@@ -155,13 +150,13 @@ static void byd_rx_hook(const CANPacket_t *msg) {
     }
   } else if (msg->bus == BYD_CANBUS_MPC) {
     if (msg->addr == BYD_CANADDR_ACC_HUD_ADAS) {
-      // Atto3: controls_allowed LEVEL-tracks ACC-active (re-asserted every 50 Hz 0x32D
-      // frame) because the car's ACC is already on when OP engages - pcm_cruise_check's
-      // rising edge never fires (RE'd from stock passthrough, route 00000020).
-      // The POC button latch ORs in on top (param 0x1000, default off).
-      // && !brake_pressed (SAFETY_REVIEW H3): the level-track used to overwrite
-      // the brake exit within 20 ms, leaving brake-disengage single-path through the
-      // latch clear. This keeps an independent brake gate at this level.
+      // controls_allowed follows the ACC-active level, which each 50 Hz 0x32D frame
+      // asserts again. A level and not an edge, because the car ACC is already on when
+      // openpilot engages, so the rising edge in pcm_cruise_check never occurs.
+      // The button latch, param 0x1000, adds to it. It is off by default.
+      // The brake term is necessary. Without it the level overwrites the brake exit within
+      // 20 ms, and the brake disengage has only one path. The brake term is an independent
+      // gate at this level.
       unsigned int accstate = ((msg->data[2] >> 3) & 0x07U);
       bool acc_active = (accstate == 0x3U) || (accstate == 0x5U);
       controls_allowed = (acc_active || (byd_poc_btn_engage && byd_btn_latch)) && !brake_pressed;
@@ -183,12 +178,11 @@ static bool byd_tx_hook(const CANPacket_t *msg) {
   // - rate 4.0 deg/frame flat: openpilot's own cap is 3.0 (values.py MAX_ANGLE_RATE) at
   //   every speed, measured p99.9 command delta over 9 routes is <= 3.0, and the stock
   //   camera's own ceiling is 4.8. 4.0 never blocks a legitimate frame (a blocked active
-  //   frame gaps the EPS stream -> STATE=11 dropout, see SESSION §5b) but bounds a
-  //   runaway at ~12x tighter than the pre-2026-07-17 effective limit.
+  //   frame gaps the EPS stream and gives a state-11 dropout. It still bounds a runaway.
   // - angle-error bound (inlined below; the modern shared checker dropped the
-  //   max_angle_error fields): command may never run more than 50 deg from the measured
-  //   wheel above 3 m/s (legitimate cmd-vs-wheel lag measured 27-40 deg p90 in rt56's
-  //   sharpest curves; 50 clears that, yet bounds a runaway command hard).
+  //   max_angle_error fields): above 3 m/s the command may never be more than 50 deg from
+  //   the measured wheel. The measured p90 command-to-wheel lag in a sharp curve is 27 to
+  //   40 deg, so 50 permits a true command and still bounds a runaway command.
   // - max_angle 390 deg matches the python-side ANGLE_LIMITS.
   static const AngleSteeringLimits BYD_ATTO3_STEERING_LIMITS = {
     .max_angle = 3900,
@@ -232,10 +226,10 @@ static bool byd_tx_hook(const CANPacket_t *msg) {
     if (msg->addr == BYD_CANADDR_STEERING_MODULE) {
       // STEER_ANGLE 24|16@1- (bytes 3,4 LE signed), STEER_REQ bit 21. Inactive frames
       // (STEER_REQ=0) carry no steering authority and are always allowed - they are the
-      // keep-alive stream the EPS needs at stops (SESSION §5b) and the handshake path.
-      // Deliberately NOT checked when REQ=0 (matches the validated wip hook): the shared
-      // checker's inactive-angle test would block idle frames at manual full lock
-      // (wheel past 390 deg), gapping the EPS stream exactly when it must not gap.
+      // keep-alive stream that the EPS needs at a stop, and they are the handshake path.
+      // The checker does not run when REQ=0. This is deliberate. The inactive-angle test of
+      // the shared checker blocks idle frames at manual full lock, where the wheel is past
+      // 390 deg, and that gaps the EPS stream when it must not gap.
       bool steer_req = GET_BIT(msg, 21U);
       if (steer_req) {
         // Comma rule: no active steering unless controls_allowed (also enforced inside

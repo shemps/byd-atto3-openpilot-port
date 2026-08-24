@@ -1,38 +1,35 @@
 """BYD Atto 3 RadarInterface — Veoneer MVS4 private-bus object tracks.
 
-Parses RADAR_TRACK_00..09 (0x280-0x289, 64-byte FD frames on panda bus 1 = the
-private radar<->camera bus, tapped READ-ONLY) into RadarData points. Ported to
-the stock opendbc RadarInterfaceBase from the validated carrot-tree version:
-the base class there supplied a radarDelay-compensated self.v_ego and derived
-aLead/jLead per track; stock radard does its own lead processing, so here we
-only need vRel — computed against ego speed parsed from the chassis bus
-(0x1F0 WHEELSPEED_CLEAN, the same message carstate reads), because VLEAD is
-ABSOLUTE lead velocity.
+This module parses RADAR_TRACK_00 to RADAR_TRACK_09, addresses 0x280 to 0x289,
+into RadarData points. The frames are 64-byte FD frames on panda bus 1, the
+private radar-to-camera bus, which this port reads only.
 
-Every mapping was replay-validated OFFLINE against two both-bus drive captures
-before this file existed (harness/radar_replay_validate.py, 2026-07-15):
-  - integrity: CRC8/J1850+DataID passed 287k/287k frames across both drives
-  - VLEAD is ABSOLUTE lead velocity: d(LONG_DIST)/dt tracks VLEAD - vEgo with
-    r=0.93-0.95, slope 0.97-0.99 (ego = ESC 0x121 * 0.0725)
+radard does its own lead processing, so this module supplies vRel only. VLEAD is
+the absolute lead velocity, so vRel needs the ego speed. The ego speed comes from
+the chassis bus, 0x1F0 WHEELSPEED_CLEAN, which is the message carstate reads.
+
+An offline replay of two both-bus drive captures validated each mapping:
+  - Integrity: CRC8/J1850 with DataID passed 287k of 287k frames.
+  - VLEAD is the absolute lead velocity. d(LONG_DIST)/dt follows VLEAD - vEgo
+    with r = 0.93 to 0.95 and slope 0.97 to 0.99.
       ->  pt.vRel = VLEAD - v_ego
-  - LAT_DIST is already ISO +y=left (oncoming traffic in Thai left-hand
-    traffic sits at negative LAT)  ->  yRel = +LAT_DIST
-  - LONG_DIST is NOT sensor-referenced: it comes from the ego rear-axle origin, so
-    dRel = LONG_DIST - BUMPER_TO_RADAR_ORIGIN_M (FINDINGS §16, measured 2026-08-19
-    against four leads of known body width; the raw value ran ~3.2 m long on cars
-    and trucks alike)
-  - lead coverage vs the camera's fused HUD lead flag while ACC-active:
-    96.6% / 99.8% on the two drives
-  - 0x28A-0x29D are overflow slots for the 11th+ object (dense traffic only,
-    rare) — not in the DBC, not parsed; extend byd_radar_fd.dbc if needed
+  - LAT_DIST is already ISO +y = left. In left-hand traffic, oncoming vehicles
+    have a negative LAT.  ->  yRel = +LAT_DIST
+  - LONG_DIST is not referenced to the sensor. It comes from the ego rear-axle
+    origin, so dRel = LONG_DIST - BUMPER_TO_RADAR_ORIGIN_M.
+  - Lead coverage against the fused HUD lead flag of the camera, while the stock
+    ACC was active: 96.6 % and 99.8 % on the two drives.
+  - 0x28A to 0x29D are overflow slots for the 11th object and above. They occur
+    only in dense traffic. They are not in the DBC and this module does not parse
+    them. Add them to byd_radar_fd.dbc if you need them.
 
-Filter constants mirror the validated reference implementation in
-veoneer_tracks.py (the bench module the replay validator exercises).
+The filter constants are the same as the reference implementation in
+veoneer_tracks.py, which is the bench module the replay validator uses.
 
-Deployment: interface.py must set radarUnavailable=False, radarTimeStep=0.075
-(slots repeat at ~13.3 Hz) and leave radarDelay 0.0 until measured.
-byd_radar_fd.dbc ships with the port. The panda bus-1 monitor-mode fw change
-(silent tap, no ACK) is a separate task and does not affect this RX-only code.
+To deploy: interface.py must set radarUnavailable = False, and radarDelay stays
+0.0 until you measure it. byd_radar_fd.dbc is part of the port. The panda bus-1
+monitor-mode firmware change gives a silent tap with no ACK. It is separate and
+does not affect this receive-only code.
 """
 from opendbc.can import CANParser
 from opendbc.car import Bus
@@ -52,33 +49,31 @@ EMPTY_TRACK_ID = 255
 # card) so this never fires while the radar is actually streaming.
 IDLE_FRAMES = 20
 IDLE_PUBLISH_DIV = 5
-# Fixed filter thresholds (= veoneer_tracks.py, keep in sync). Checked against
-# the replay validator percentiles (RADAR_VALIDATION_2026-07-15.md): CONFIDENCE
-# is binary 0/1 (0.30 sits in the dead band), LONG_DIST p99 161 m (< 200),
-# ACC-active lead coverage 96.6%/99.8%. Defaults hold; no tuning warranted.
+# Fixed filter thresholds. They are the same as veoneer_tracks.py. Keep the two in
+# agreement. The replay validator percentiles confirm them: CONFIDENCE is binary 0 or 1,
+# so 0.30 is in the dead band. LONG_DIST p99 is 161 m, which is below 200. Lead coverage
+# while the stock ACC was active was 96.6 % and 99.8 %.
 MIN_CONF = 0.30
 MAX_LONG_M = 200.0
 
-# RANGE ORIGIN (FINDINGS §16, measured 2026-08-19). LONG_DIST is referenced to the ego
-# REAR-AXLE centre - the ISO 8855 vehicle frame - not to the sensor face. openpilot's
-# dRel must be measured from the FRONT BUMPER, so the bumper->rear-axle distance comes
-# off every track: front overhang 885 mm (dimension drawing) + wheelbase 2720 mm.
-# Evidence: on four leads of KNOWN body width the raw range ran +3.21/+4.11/+2.04/+3.62 m
-# long (Corolla taxi, CR-V, Yaris-class hatch, box truck) while the vision lead sat within
-# 0.1-0.8 m of the same geometry, and cars were biased exactly as much as the truck - so
-# this is the sensor's origin, not a reflection point on the target. Acceptance test
-# (byd_port/lead_range_acceptance.py, 7863 radar-matched frames): the two rulers disagreed
-# by +4.18 m raw, +0.43 m in the 0-12 m stopping band after this subtraction.
+# Range origin. LONG_DIST is referenced to the ego rear-axle centre, the ISO 8855 vehicle
+# frame, and not to the sensor face. openpilot dRel must be measured from the front bumper,
+# so subtract the bumper-to-rear-axle distance from each track: front overhang 885 mm from
+# the dimension drawing, plus wheelbase 2720 mm.
+# Measurement: against four leads of known body width the raw range read +3.21, +4.11, +2.04
+# and +3.62 m too far, while the vision lead stayed within 0.1 to 0.8 m of the same geometry.
+# The error on the cars is the same as the error on the truck, so this is the sensor origin
+# and not a reflection point on the target. Over 7863 radar-matched frames the radar-to-vision
+# difference changed from +4.18 m to +0.43 m in the 0 to 12 m stopping band.
 BUMPER_TO_RADAR_ORIGIN_M = 3.60
-# Cut-in gate (2026-07-20, TASKS 6b): Veoneer CONFIDENCE ramps 0->1 over ~1.9 s on
-# newborn tracks, so MIN_CONF alone hides close cut-ins from radard for ~1.4 s (route-6b
-# ramp merge). Accept low-conf tracks that are close, in-corridor, persistent >= 2
-# cycles, and CO-MOVING (VLEAD is absolute; > 1 m/s rejects stationary clutter and
-# oncoming traffic — those dominated the raw gate's false accepts on drive_v3).
-# Replay-validated 2026-07-20: 0 phantom leads while stock-ACC-active on drive_v3 +
-# drive_cam_v6; on routes 6b/7b ~400 cut-in-class births each, visibility gains
-# cluster at +1.25-1.40 s. radard's own establishment still filters sub-second
-# transients out of leadOne.
+# Cut-in gate. On a new track the Veoneer CONFIDENCE goes from 0 to 1 over about 1.9 s.
+# MIN_CONF alone therefore hides a close cut-in from radard for about 1.4 s. Accept a
+# low-confidence track if it is close, inside the corridor, present for 2 cycles or more,
+# and moving in the same direction. VLEAD is absolute, so the 1 m/s limit rejects
+# stationary clutter and oncoming traffic, which are the main false accepts.
+# An offline replay gave 0 phantom leads while the stock ACC was active on two drives.
+# The gate makes a cut-in visible 1.25 to 1.40 s earlier. radard still removes transients
+# shorter than one second from leadOne.
 CUTIN_MAX_LONG_M = 20.0
 CUTIN_MAX_LAT_M = 3.5
 CUTIN_MIN_CYCLES = 2
@@ -132,11 +127,10 @@ class RadarInterface(RadarInterfaceBase):
       raw_tid = sig["TRACK_ID"]
       tid = EMPTY_TRACK_ID if raw_tid is None else int(raw_tid)
       raw_long = float(sig["LONG_DIST"] or 0.0)
-      # bumper-referenced, per BUMPER_TO_RADAR_ORIGIN_M above. Two knock-ons, both
-      # deliberate: the MAX_LONG_M gate below now also drops the non-physical negatives
-      # (a target touching the bumper reads ~3.6 raw) instead of publishing a lead from
-      # behind the bumper, and the CUTIN_MAX_LONG_M window becomes a real 20 m of road
-      # rather than the 16.4 m it silently was.
+      # Referenced to the bumper, per BUMPER_TO_RADAR_ORIGIN_M above. This has two
+      # intentional effects. The MAX_LONG_M gate below also removes negative ranges, because
+      # a target at the bumper reads about 3.6 raw. The CUTIN_MAX_LONG_M window becomes a
+      # true 20 m of road, instead of the 16.4 m it was before.
       long_dist = raw_long - BUMPER_TO_RADAR_ORIGIN_M
       conf = float(sig["CONFIDENCE"] or 0.0)
       lat_dist = float(sig["LAT_DIST"] or 0.0)

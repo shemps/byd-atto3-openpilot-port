@@ -27,52 +27,43 @@ class CarInterface(CarInterfaceBase):
     ret.steerActuatorDelay = 0.2
     ret.steerLimitTimer = 0.4
 
-    # The stock ACC is NOT the authority on this port: openpilot engages off the
-    # LKAS-button latch and owns the set speed. Leaving the base default
-    # (pcmCruise=True) made cruise.py read the set speed from the car instead of
-    # the rocker - and since carstate floors cruiseState.speed at 8.3 m/s when the
-    # stock ACC is off, the UI sat at "MAX 30" and the rocker did nothing (the
-    # non-pcm button path is only called when pcmCruise is False). In-car
-    # 2026-08-02. carrot hid this behind its own speed_from_pcm knob, which is why
-    # the wip worked with the base default.
+    # The stock ACC is not the authority on this port. openpilot engages on the LKAS-button
+    # latch and owns the set speed, so pcmCruise must be False. With pcmCruise True, cruise.py
+    # reads the set speed from the car and not from the rocker, and the non-pcm button path
+    # never runs. The UI then shows the carstate floor of 8.3 m/s and the rocker has no effect.
     ret.pcmCruise = not (os.getenv("POC_BTN_ENGAGE") == "1")
 
-    # Veoneer private-bus radar (bus 1). Opt-in via env for a supervised radar
-    # drive: parked, the Veoneer stops TXing -> no track frames -> radarState
-    # would go stale and radarFault (NO_ENTRY) could block engagement, so keep
-    # it OFF by default until the not-transmitting case is handled in radard.
-    # (RADAR_TRACK slots repeat ~13.3 Hz; 0.11.2 dropped CarParams.radarTimeStep,
-    # radard now derives its own rate.)
+    # Veoneer radar on the private bus, panda bus 1. The environment variable enables it for a
+    # supervised drive. Keep it off by default: when the car is parked the Veoneer stops to
+    # transmit, radarState becomes stale, and the radarFault NO_ENTRY can prevent engagement.
+    # Enable it after radard handles the no-transmission case.
+    # The RADAR_TRACK slots repeat at about 13.3 Hz. 0.11.2 has no CarParams.radarTimeStep,
+    # because radard calculates its own rate.
     ret.radarUnavailable = os.getenv("USE_VEONEER_RADAR") != "1"
     ret.alphaLongitudinalAvailable = False
 
-    # openpilot longitudinal on the no-MVS4 path (LONG_PLAN.md LG2), env-gated for a
-    # supervised bring-up drive - default OFF keeps the lat-only POC unchanged. We
-    # inject 0x32E ACC_CMD (stock ACC off); safety enforces the accel bounds.
+    # openpilot longitudinal control. The environment variable enables it for a supervised
+    # drive. Default off keeps the port lateral only. openpilot sends 0x32E ACC_CMD with the
+    # stock ACC off, and the panda safety enforces the accel limits.
     ret.openpilotLongitudinalControl = os.getenv("USE_OP_LONG") == "1"
     if ret.openpilotLongitudinalControl:
-      ret.longitudinalActuatorDelay = 0.5   # RE'd plant lag: best-fit +550ms (byd_general CM_ 814)
+      ret.longitudinalActuatorDelay = 0.5   # measured plant lag, best fit +550 ms
       ret.stopAccel = -0.5
-      # NOTE vs the wip/carrot port: 0.11.2 deprecated vEgoStopping/vEgoStarting/
-      # startAccel/startingState (longcontrol never enters `starting` anymore, it goes
-      # stopping->pid). The startAccel launch kick is gone with it; move-off relies on
-      # CC.cruiseControl.resume + the carcontroller launch snap-to-zero + JERK_UP_LAUNCH.
-      # If launches feel lazy on this stack, that is where to look first.
-      # 0x32E ACCEL_CMD is a FEEDFORWARD accel request (the car's IPB closes its own loop with
-      # ~0.5s lag). So lean on feedforward (kf=1) with only light PID trim - a high feedback gain
-      # on a 0.5s-lag actuator winds the integrator up to the ACCEL_MAX ceiling when the car
-      # hasn't responded yet (route 00000053: command ran to +2.0 while kW~0). Gentle gains keep
-      # accel tracking the planner's aTarget. Tune up from here once a no-gas drive lands (LG4).
+      # 0.11.2 has no vEgoStopping, vEgoStarting, startAccel or startingState. longcontrol
+      # goes from stopping to pid and never enters a starting state, so there is no launch
+      # kick. Move-off uses CC.cruiseControl.resume, the launch snap-to-zero in the car
+      # controller, and JERK_UP_LAUNCH. Examine those three first if move-off is slow.
       #
-      # NO P TERM: upstream deprecated longitudinalTuning.kpBP/kpV (opendbc #3681,
-      # openpilot #38614) - longcontrol now builds its PID with kp = 0 for every car.
-      # This continues the direction of our own 2026-08-02 gain cut (0.5/0.4/0.3 ->
-      # 0.2/0.15/0.12): 0.11.2's longcontrol closes on `a_target - CS.aEgo`, our wheel-
-      # speed-derived aEgo carries p95 jerk ~15 m/s^3 of noise, and kp turned that noise
-      # into command churn the driver felt as "always correcting itself" (routes f9/fb;
-      # the planner target itself was smooth at p95 1.1). The IPB closes its own loop on
-      # the commanded accel with ~0.5 s lag, so kf = 1 does the work and ki trims the
-      # remaining IPB model error. Watch steady-state accel error on the next long drive.
+      # 0x32E ACCEL_CMD is a feedforward accel request. The car IPB closes its own loop with
+      # about 0.5 s of lag. Use feedforward, kf = 1, with a light PID trim. A high feedback
+      # gain on an actuator with 0.5 s of lag winds the integrator to the ACCEL_MAX limit
+      # before the car responds.
+      #
+      # There is no P term. 0.11.2 has no longitudinalTuning.kpBP or kpV, and longcontrol
+      # builds its PID with kp = 0 for every car. longcontrol closes on a_target minus
+      # CS.aEgo. On this car aEgo comes from wheel speed and carries about 15 m/s^3 of p95
+      # jerk noise, which a P term turns into command churn. ki trims the remaining IPB
+      # model error. Check the steady-state accel error on a long drive.
       ret.longitudinalTuning.kiBP = [0.0, 35.0]
       ret.longitudinalTuning.kiV = [0.01, 0.01]
 

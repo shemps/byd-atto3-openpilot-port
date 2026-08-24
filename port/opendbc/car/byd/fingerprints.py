@@ -36,8 +36,8 @@ FW_VERSIONS = {
       b'\x9c\xa4\x16\x02\x19\x01',  # FMRR front radar (F194='TPVp')
     ],
     (Ecu.engine, 0x7e0, None): [
-      b'ug\x18\x04\x147',  # EV drive unit / VCU (F197='SCEV'), 2026-06 DID dump
-      b'uq\x18\x0c\nA',  # same VCU, live query 2026-07-11 (updated during dealer/ADAS-recal visit?)
+      b'ug\x18\x04\x147',  # EV drive unit / VCU (F197='SCEV')
+      b'uq\x18\x0c\nA',  # the same VCU after a dealer visit. Both versions are valid.
     ],
     (Ecu.unknown, 0x7f1, None): [
       b'\x9cE\x18\x01\x1a\x01',  # SRS airbag, part SC2EM-D / SEC30-P50 (supplier 8893)

@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""Unit test for the BYD RadarInterface cut-in gate (2026-07-21).
+"""Unit test for the BYD RadarInterface cut-in gate.
 
-Drives RadarInterface.update() directly with a fake CANParser (the .vl dict the
-real parser exposes), so every gate branch is exercised deterministically —
-the replay validation (radar_replay_validate.py §7, cutin_births_scan.py)
-covers real-data behavior; this covers the deployed class itself.
-Run: .venv/bin/python opendbc_repo/opendbc/car/byd/test_radar_interface_gate.py
+The test calls RadarInterface.update() with a fake CANParser, which supplies the
+.vl dict that the real parser gives. Each gate branch therefore runs with a known
+input. An offline replay covers the behavior on real data. This test covers the
+class itself.
+Run: python opendbc/car/byd/test_radar_interface_gate.py
 """
 import sys
 

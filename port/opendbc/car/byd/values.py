@@ -13,42 +13,38 @@ Ecu = structs.CarParams.Ecu
 class CarControllerParams:
   STEER_STEP = 2  # Angle command is sent at 50 Hz
 
-  # On a fault STEERING_TORQUE.LKS_PREPARED goes from 0 to 1.
-  # STEERING_TORQUE.MAIN_TORQUE is saturated at -300 for around 900ms,
-  # while the wheel sits 15-26 deg past the commanded TARGET_ANGLE.
-  # MAX_LATERAL_ACCEL/JERK: upstream defaults (~3.6 = ISO + average-banked-road roll
-  # tolerance) match the values this port validated on-car.
+  # MAX_LATERAL_ACCEL and MAX_LATERAL_JERK use the upstream defaults, about 3.6, which is
+  # the ISO value plus an allowance for average road bank. Note that the EPS itself stops
+  # lane keeping near 1.3 to 2.5 m/s^2 of lateral acceleration, so this limit is higher than
+  # the car delivers. See "EPS limits" in the top-level README.
   ANGLE_LIMITS: AngleSteeringLimitsVM = AngleSteeringLimitsVM(
     390,  # deg
-    # limit angle rate to both prevent a fault and for low speed comfort (deg/20ms frame);
-    # raised 2->3 for tighter sharp-curve tracking (rt56 hit the 2-cap on the sharpest ~1%,
-    # wheel lagged cmd 27-40deg p90 -> cut wide). Stock Veoneer max=4.8 (5 caused 29deg
-    # spikes/shaky wheel), so 3 stays within the safe stock range.
+    # Angle-rate limit per 20 ms frame. It prevents an EPS fault and gives low-speed comfort.
+    # The stock Veoneer camera uses a maximum of 4.8. A value of 5 gives 29 deg spikes and an
+    # unsteady wheel, so 3 stays inside the stock range.
     MAX_ANGLE_RATE=3,  # deg/20ms
   )
 
-  STEER_DRIVER_OVERRIDE = 10   # EPS torque threshold for soft override (LEGACY - DRIVER_EPS_TORQUE)
-  STEER_DRIVER_DISENGAGE = 30  # EPS torque threshold for hard disengage (LEGACY - DRIVER_EPS_TORQUE)
-  # Real driver-torque override threshold, in Nm, on 0x1FC STEERING_TORQUE.DRIVER_TORQUE.
-  # steeringPressed keys on THIS, not on DRIVER_EPS_TORQUE, which is masked/noisy once the
-  # EPS is in state 10 - the exact window openpilot is steering (route 0000015d: the driver
-  # fought a wrong U-turn at 23-29 Nm and DRIVER_EPS_TORQUE stayed 0-34 noise, so no override
-  # fired). Measured: DRIVER_TORQUE median 1.3 Nm engaged (18.8 min), so 18 Nm is well clear
-  # of hands-on noise (5 override events, all sustained, median 6.3 s) yet catches a real
-  # fight instantly. FINDINGS §17 / TASKS #56 defect A.
+  # Thresholds on DRIVER_EPS_TORQUE. That signal is masked while the EPS steers, so these
+  # two are not used for override. Keep them only for compatibility.
+  STEER_DRIVER_OVERRIDE = 10
+  STEER_DRIVER_DISENGAGE = 30
+  # Driver-torque override threshold, in Nm, on 0x1FC STEERING_TORQUE.DRIVER_TORQUE.
+  # steeringPressed uses this signal. DRIVER_TORQUE has a median of 1.3 Nm while openpilot
+  # steers, so 18 Nm is clear of hands-on noise and still detects a sustained fight.
   STEER_DRIVER_TORQUE_OVERRIDE_NM = 18
 
-  # Longitudinal (LONG_PLAN.md LG2). Comfort envelope, well inside the safety cap
-  # (safety modes/byd.h enforces -3.5..+2.0 on 0x32E). ISO 15622 defaults; tune in LG4.
-  # 0x32E ACCEL_CMD field itself resolves to 0.05 m/s^2/LSB over -5..+7.75.
-  ACCEL_MIN = -3.0  # m/s^2  (stock camera comfort-braked to -2.55 max on tape)
-  ACCEL_MAX = 1.5   # m/s^2  (comfort cap; was 2.0 - the PID wound to +2.0 on rt 53. tune up in LG4)
-  # LG4 jerk limiter on the accel command (m/s^3). The planner already jerk-limits its
-  # output; this only bites on transition steps (re-engage after a gas override). Braking
-  # allowed to build ~2x faster than accel for response. ISO 15622 comfort ~2.5. Tune LG4.
-  JERK_UP = 2.5     # accel increasing (toward accel / less braking)
-  JERK_UP_LAUNCH = 4.0  # pull-away only (vEgo < 2, cmd > 0): beat the ~0.5s IPB lag off the line
-  JERK_DOWN = 5.0   # accel decreasing (toward braking)
+  # Longitudinal comfort envelope. It stays inside the safety limit, because modes/byd.h
+  # enforces -3.5 to +2.0 on 0x32E. The 0x32E ACCEL_CMD field resolves to 0.05 m/s^2 per LSB
+  # over -5 to +7.75. The values are the ISO 15622 defaults.
+  ACCEL_MIN = -3.0  # m/s^2. The stock camera brakes to -2.55 maximum.
+  ACCEL_MAX = 1.5   # m/s^2. Comfort limit.
+  # Jerk limiter on the accel command, in m/s^3. The planner limits its own jerk, so this
+  # acts only on a step change, such as a re-engage after a gas override. Braking builds
+  # about two times faster than acceleration, for response. ISO 15622 comfort is about 2.5.
+  JERK_UP = 2.5     # acceleration increases, toward accel or less braking
+  JERK_UP_LAUNCH = 4.0  # pull-away only, vEgo < 2 and cmd > 0. It covers the 0.5 s IPB lag.
+  JERK_DOWN = 5.0   # acceleration decreases, toward braking
 
 
 class BydSafetyFlags(IntFlag):

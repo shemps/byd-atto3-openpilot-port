@@ -1,27 +1,22 @@
 """Veoneer MVS4 private-bus radar track state for the BYD Atto 3.
 
-Pure logic, no imports — the REFERENCE implementation exercised by the bench
-replay validator (harness/radar_replay_validate.py, cantools decode of text
-logs). The deployed carrot RadarInterface (radar_interface.py) mirrors this
-module's filter constants but uses the carrot base-class track lifecycle
-(pre-allocated pts + MyTrack smoothing) instead of slot expiry — keep the
-thresholds here and there in sync. Both decode RADAR_TRACK_00..09
-(0x280-0x289, 64-byte FD frames, byd_radar_fd.dbc).
+This module is pure logic with no imports. It is the reference implementation that
+the bench replay validator uses. radar_interface.py has the same filter constants,
+but a different track lifecycle. Keep the thresholds in the two files the same.
+Both decode RADAR_TRACK_00 to RADAR_TRACK_09, addresses 0x280 to 0x289, which are
+64-byte FD frames in byd_radar_fd.dbc.
 
-Signal semantics (tembikai DBC claims, arbitrated by the replay validator —
-see the validator report in byd_port/ before trusting scaling changes):
-  TRACK_ID    0-254 live, 255 = empty slot
-  LONG_DIST   m from the ego REAR-AXLE origin (ISO 8855 vehicle frame) - NOT from
-              the sensor face, which is what this line claimed until 2026-08-19.
-              Measured +3.2 m long against four leads of known body width, cars and
-              trucks alike (FINDINGS §16). Left RAW here on purpose: this module is
-              the decode reference the replay validator scores, so its numbers must
-              stay comparable with the validated report. The openpilot-facing
-              conversion lives in radar_interface.py (BUMPER_TO_RADAR_ORIGIN_M).
+Signal meanings. The replay validator confirmed each one. Read the validator report
+before you change a scale.
+  TRACK_ID    0 to 254 live, 255 = empty slot
+  LONG_DIST   m from the ego rear-axle origin, the ISO 8855 vehicle frame. It is not
+              from the sensor face. This module keeps the raw value, because the
+              replay validator scores these numbers. radar_interface.py holds the
+              conversion for openpilot, BUMPER_TO_RADAR_ORIGIN_M.
   LAT_DIST    m lateral
-  VLEAD       m/s (relative vs absolute is decided by the validator)
+  VLEAD       m/s, absolute
   ALEAD       m/s^2
-  CONFIDENCE  0..1 (25-bit fraction)
+  CONFIDENCE  0 to 1, a 25-bit fraction
 """
 
 EMPTY_TRACK_ID = 255
@@ -30,8 +25,8 @@ N_SLOTS = 10          # RADAR_TRACK_00..09; 0x28A-0x29D exist on the bus but are
 
 # ponytail: fixed thresholds, tune from validator percentiles if the defaults
 # drop real leads (min_conf) or pass clutter (max_long).
-# Loop ran once 2026-07-17 vs the 07-15 percentile report (RADAR_VALIDATION doc):
-# values checked and KEPT — retune only when a drive shows either symptom.
+# The validator percentile report confirms these values. Change them only if a drive
+# shows one of the two symptoms above.
 DEFAULT_EXPIRY_S = 0.5
 DEFAULT_MIN_CONF = 0.30
 DEFAULT_MAX_LONG_M = 200.0

@@ -10,15 +10,13 @@ the ten places an existing file has to change. There is no openpilot tree here �
 Read the [top-level README](../README.md) first. It explains the signals and the control messages that these
 files implement.
 
-**These files target released openpilot 0.11.2, on a branch named `byd-atto3`.** They call upstream APIs
-only. An earlier revision of this repository shipped the same port from a `carrotpilot` fork; that fork is
-retired and its API calls are gone. Where 0.11.2 changed an API or dropped a field, the code says so at the
-line — `apply_steer_angle_limits_vm`, `AngleSteeringLimitsVM.MAX_ANGLE_RATE`, the removal of
+**These files target released openpilot 0.11.2, on a branch named `byd-atto3`.** They use upstream APIs
+only: `apply_steer_angle_limits_vm` and `AngleSteeringLimitsVM.MAX_ANGLE_RATE` for the angle limits, and no
 `CarState.brake`, `CarState.gearStep`, `radarTimeStep`, `vEgoStopping`, `vEgoStarting`, `startAccel`,
-`startingState` and `longitudinalTuning.kpBP`/`kpV`.
+`startingState`, `longitudinalTuning.kpBP` or `kpV`. On a different openpilot version, check these first.
 
 The patch uses the monorepo paths `opendbc_repo/opendbc/...` and `openpilot/selfdrive/...`. In a standalone
-opendbc checkout, strip the `opendbc_repo/` prefix.
+opendbc checkout, remove the `opendbc_repo/` prefix.
 
 ## New files
 
@@ -57,8 +55,8 @@ opendbc checkout, strip the `opendbc_repo/` prefix.
 The two `panda/` changes need a panda rebuild and a reflash. The rest is Python and C that builds with the
 rest of the tree.
 
-**The mode table entry sits inside `#ifdef ALLOW_DEBUG`.** Build the panda with `ALLOW_DEBUG`, or move the
-entry out of that block yourself and understand why it was there.
+**The mode table entry is inside `#ifdef ALLOW_DEBUG`.** Build the panda with `ALLOW_DEBUG`, or move the
+entry out of that block. If you move it, first find out why it is there.
 
 ## Order
 
@@ -75,9 +73,8 @@ python opendbc/car/byd/test_radar_interface_gate.py     # radar cut-in gate, no 
 pytest opendbc/safety/tests/test_byd.py                 # safety rules against libsafety
 ```
 
-`test_byd.py` is a standard opendbc safety test — 22 cases — so opendbc's own pytest, mutation, coverage and
-MISRA tooling picks it up. Build `libsafety` with opendbc's build first. The earlier standalone acceptance
-script and its `carrot_test_prelude.h` are gone; the same coverage lives in `test_byd.py`.
+`test_byd.py` is a standard opendbc safety test with 22 cases. The opendbc pytest, mutation, coverage and
+MISRA tools find it by that name. Build `libsafety` with the opendbc build first.
 
 Passing them proves nothing beyond the tests themselves. They are not validation and not a safety case.
 

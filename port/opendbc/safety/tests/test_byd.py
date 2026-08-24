@@ -175,7 +175,7 @@ class TestBydSafety(unittest.TestCase):
     self.assertFalse(self._tx(STEERING_MODULE_ADAS, MAIN_BUS, self._steer_frame(540, 1)), "54 deg from meas blocked")
 
   def test_reengage_reanchors_rate_limit(self):
-    # Route 000000f7 2026-08-02: desired_angle_last only updates on our REQ=1
+    # desired_angle_last updates only on a REQ=1
     # frames, so between engagements it stays frozen at the PREVIOUS engagement's
     # last command. A mid-drive re-engage with the wheel anywhere else then failed
     # the rate check on frame one, and the checker's violation-reset (anchor :=
@@ -233,7 +233,7 @@ class TestBydSafety(unittest.TestCase):
 
   def test_fwd_blocks_camera_immediately_at_engage(self):
     """no handover overlap: the camera must be blocked BEFORE our first TX lands,
-    or the EPS sees two 0x1E2 sources and latches STATE=11 (in-car 2026-08-02)"""
+    or the EPS sees two 0x1E2 sources and latches state 11."""
     self._latch_engage()
     self.assertTrue(self.safety.get_controls_allowed())
     self.assertEqual(self._fwd(CAM_BUS, STEERING_MODULE_ADAS), -1, "engage grace must block")

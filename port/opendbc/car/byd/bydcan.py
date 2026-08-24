@@ -22,22 +22,20 @@ def create_steering_control(packer, apply_angle: float, lat_active: bool, counte
 
 def create_acc_cmd(packer, accel: float, long_active: bool, counter: int,
                    standstill: bool = False, resume: bool = False):
-  # 0x32E ACC_CMD - openpilot longitudinal (LONG_PLAN.md LG2/LG4). Reproduces the stock
-  # camera's "actively commanding" bit pattern (bits ON1 ON2 CTRL=1, REQ_NOT_STANDSTILL=1,
-  # CMD_REQ_ACTIVE_LOW=0), RE'd from drive_cam_v4/v5/v6 (harness/acc_long_survey.py).
-  # When not longActive we emit the disengaged pattern; the safety fwd hook forwards the
-  # camera's own ACC_CMD in that case (block only engages while CONTROLLABLE_AND_ON=1).
-  # standstill (LG4): hold at a full stop - the stock choreography drops REQ_NOT_STANDSTILL
-  # and raises OVERRIDE_OR_STANDSTILL + STANDSTILL_STATE (v6 stop trace, acc_long_survey.py).
-  # resume: pulse STANDSTILL_RESUME to pull away from the hold.
-  # ACCEL_FACTOR/DECEL_FACTOR are a paired regime selector (they move together with
-  # ACCEL_CMD) telling the IPB which gain profile to apply: coast (0,0), soft accel
-  # (12,5), soft decel (13,1) - on-car measured 1.02-1.12x delivered/commanded across
-  # -0.25..-1.25 (factor_fit.py, 852 windows) - and sustained hard brake (1,1), stock's
-  # modal pair for every bin -1.75..-4.0 in a 78.9k-frame survey of the v1-v6 stock-ACC
-  # captures (stock_regime_map.py). The v5-fit pair (1,2) used here before was only ever
-  # a minority/transition pair in stock; camping on it caused the brake-bite transient
-  # (route 65: cmd -1.8 delivered -3.1 peaks at regime entry, TASKS #4).
+  # 0x32E ACC_CMD for openpilot longitudinal control. It reproduces the "actively
+  # commanding" bit pattern of the stock camera: ON1, ON2 and CTRL = 1,
+  # REQ_NOT_STANDSTILL = 1, CMD_REQ_ACTIVE_LOW = 0.
+  # While not longActive, send the disengaged pattern. The safety forward hook then
+  # forwards the camera ACC_CMD, because the block acts only while CONTROLLABLE_AND_ON = 1.
+  # standstill holds the car at a full stop. The stock sequence clears REQ_NOT_STANDSTILL
+  # and sets OVERRIDE_OR_STANDSTILL and STANDSTILL_STATE.
+  # resume sends a STANDSTILL_RESUME pulse to pull away from the hold.
+  # ACCEL_FACTOR and DECEL_FACTOR are a pair. They move with ACCEL_CMD and tell the IPB
+  # which gain profile to use: coast (0,0), soft accel (12,5), soft decel (13,1), and
+  # sustained hard brake (1,1). Measurement on the car gives a delivered-to-commanded
+  # ratio of 1.02 to 1.12 across -0.25 to -1.25. A survey of 78.9k stock-ACC frames shows
+  # (1,1) as the stock pair for every bin from -1.75 to -4.0. Do not use the pair (1,2).
+  # It is only a transition pair in stock, and it causes a brake transient at regime entry.
   holding = long_active and standstill and not resume
   if not long_active or abs(accel) < 0.1:
     accel_fac, decel_fac = 0, 0
