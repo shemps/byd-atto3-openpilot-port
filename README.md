@@ -228,25 +228,31 @@ The EPS does not hold every angle openpilot commands. In a tight turn it stops l
 wheel to the driver mid-corner. openpilot shows "Turn Exceeds Steering Limit", then "Steering Assist
 Temporarily Unavailable". One event causes both alerts.
 
-Limit the commanded wheel angle to **3580 / speed in km/h**, a constant yaw rate of 19 deg/s. Set this limit
-and the EPS holds the commanded angle through a tight turn.
+Limit the commanded wheel angle to **3000 / speed in km/h**. Set this limit and the EPS holds the commanded
+angle through a tight turn.
 
 | Speed | Maximum wheel angle |
 |---:|---:|
-| 15 km/h | 239° |
-| 20 km/h | 179° |
-| 24 km/h | 149° |
+| 15 km/h | 200° |
+| 20 km/h | 150° |
+| 24 km/h | 125° |
+| 40 km/h | 75° |
 
-The limit is established between 14 and 24 km/h only. Above 24 km/h, keep it and confirm the behaviour on
-your own vehicle.
+The limit is a constant yaw rate. The EPS drops lane keeping at a product of 3155 and above, so 3000 keeps
+a margin under it. Do not raise the constant to 3155 or to the 3578 mean: a cap at the mean clips only 4 of
+the 9 observed drop-outs.
+
+Below 7.7 km/h the 390° angle limit binds. Above 47.8 km/h the lateral-acceleration limiter binds. The clamp
+acts only between the two. Between 24 and 47.8 km/h it acts above the band where the drop-outs were
+observed, and it is 16 % tighter than the lateral-acceleration limiter at 40 km/h. If that costs cornering
+authority, add a speed ceiling. Do not raise the constant.
 
 Do not use a lateral-acceleration limit for this. The vehicle-model limiter defaults to about 3.6 m/s²,
 which is above what the EPS delivers, and lateral acceleration does not hold constant at the drop-out
 point.
 
-Read `0x1FC` bits 46–47. The field changes from 0 to 1 about 0.5 s before the EPS drops out. Use it to hand
-back control early. Without it, the command continues to as much as 52° past the angle the EPS refused, and
-the driver receives that step at the handover.
+`0x1FC` bits 46–47 change from 0 to 1 about 0.5 s before the EPS drops out. Read the field if you want an
+early hand-back. The angle limit above is the prevention. The field is the warning.
 
 Drop-out sequence, for diagnosis:
 

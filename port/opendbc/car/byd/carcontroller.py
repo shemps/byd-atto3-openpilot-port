@@ -4,6 +4,7 @@ import numpy as np
 
 from opendbc.can.packer import CANPacker
 from opendbc.car import Bus, rate_limit, structs
+from opendbc.car.common.conversions import Conversions as CV
 from opendbc.car.lateral import apply_steer_angle_limits_vm
 from opendbc.car.interfaces import CarControllerBase
 from opendbc.car.byd import bydcan
@@ -11,6 +12,17 @@ from opendbc.car.byd.values import CarControllerParams
 from opendbc.car.vehicle_model import VehicleModel
 
 LongCtrlState = structs.CarControl.Actuators.LongControlState
+
+
+def eps_angle_cap(v_ego_raw: float) -> float:
+  """Largest |wheel angle| in deg the EPS holds in lane keeping at this speed.
+
+  See CarControllerParams.EPS_YAW_LIMIT_DEG_KMH. Never returns more than
+  STEER_ANGLE_MAX, and is finite at a standstill.
+  """
+  v_kmh = max(v_ego_raw * CV.MS_TO_KPH, 1.0)
+  return min(CarControllerParams.EPS_YAW_LIMIT_DEG_KMH / v_kmh,
+             CarControllerParams.ANGLE_LIMITS.STEER_ANGLE_MAX)
 
 # Acceptance probe. It sets a fixed accel in m/s^2 and bypasses the longitudinal planner,
 # so a first on-car longitudinal test commands a known value. The value is clamped to
@@ -68,6 +80,15 @@ class CarController(CarControllerBase):
       if CC.latActive:
         max_rate = float(np.interp(CS.out.vEgoRaw, [3.0, 10.0], [2.5, 3.0]))
         new_angle = rate_limit(new_angle, self.apply_angle_last, -max_rate, max_rate)
+        # EPS authority clamp. Do not command an angle the EPS will not hold. Past its
+        # limit the EPS drops lane keeping mid-corner and hands the wheel back with the
+        # command tens of degrees past the angle it refused. This clip only ever reduces
+        # the command, so the panda angle-rate and angle-error checks cannot newly fail.
+        # When it binds, the car runs wide and openpilot raises steerSaturated. It
+        # declines the turn instead of losing assist in it. It does not make the turn:
+        # that is a planner change, not this clamp.
+        cap = eps_angle_cap(CS.out.vEgoRaw)
+        new_angle = float(np.clip(new_angle, -cap, cap))
       self.apply_angle_last = new_angle
 
       # The passthrough safety forwards the camera 0x1E2 and 0x316 to the car while

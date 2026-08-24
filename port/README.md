@@ -25,7 +25,7 @@ The patch uses the monorepo paths `opendbc_repo/opendbc/...` and `openpilot/self
 | `opendbc/car/byd/values.py` | same path | `CAR.BYD_ATTO_3` platform, `CarControllerParams`, `0xF195` FW query, VIN/WMI fuzzy match |
 | `opendbc/car/byd/fingerprints.py` | same path | 109-ID bus-0 fingerprint and the six-ECU FW fingerprint |
 | `opendbc/car/byd/carstate.py` | same path | Reads the section-3 signals. Driver torque, EPS state, the pedal and brake sources, the button latch |
-| `opendbc/car/byd/carcontroller.py` | same path | Builds `0x1E2`, `0x316`, `0x32E`. Angle limiting, the low-speed slew cap, the jerk limiter, stop and go |
+| `opendbc/car/byd/carcontroller.py` | same path | Builds `0x1E2`, `0x316`, `0x32E`. Angle limiting, the low-speed slew cap, the EPS authority clamp, the jerk limiter, stop and go |
 | `opendbc/car/byd/bydcan.py` | same path | The three message packers and `byd_checksum` |
 | `opendbc/car/byd/interface.py` | same path | Car params. Angle steering, the longitudinal tune, the radar switch |
 | `opendbc/car/byd/radar_interface.py` | same path | Veoneer private-bus tracks to `radard`, with the range-origin correction and the cut-in gate |
@@ -63,12 +63,13 @@ entry out of that block. If you move it, first find out why it is there.
 1. Copy the new files. Apply `integration.patch`.
 2. Rebuild and reflash the panda.
 3. Fingerprint the vehicle. Check that it matches as `BYD_ATTO_3`.
-4. Run the two tests below.
+4. Run the three tests below.
 5. Drive the vehicle somewhere empty before you drive it anywhere else.
 
 ## Tests
 
 ```
+python opendbc/car/byd/test_angle_limit.py              # EPS authority clamp, no car needed
 python opendbc/car/byd/test_radar_interface_gate.py     # radar cut-in gate, no car needed
 pytest opendbc/safety/tests/test_byd.py                 # safety rules against libsafety
 ```

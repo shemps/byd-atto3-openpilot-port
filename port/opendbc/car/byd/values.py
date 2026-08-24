@@ -14,9 +14,8 @@ class CarControllerParams:
   STEER_STEP = 2  # Angle command is sent at 50 Hz
 
   # MAX_LATERAL_ACCEL and MAX_LATERAL_JERK use the upstream defaults, about 3.6, which is
-  # the ISO value plus an allowance for average road bank. Note that the EPS itself stops
-  # lane keeping near 1.3 to 2.5 m/s^2 of lateral acceleration, so this limit is higher than
-  # the car delivers. See "EPS limits" in the top-level README.
+  # the ISO value plus an allowance for average road bank. The EPS itself stops lane
+  # keeping first below 47.8 km/h - see EPS_YAW_LIMIT_DEG_KMH.
   ANGLE_LIMITS: AngleSteeringLimitsVM = AngleSteeringLimitsVM(
     390,  # deg
     # Angle-rate limit per 20 ms frame. It prevents an EPS fault and gives low-speed comfort.
@@ -24,6 +23,21 @@ class CarControllerParams:
     # unsteady wheel, so 3 stays inside the stock range.
     MAX_ANGLE_RATE=3,  # deg/20ms
   )
+
+  # EPS lane-keeping authority limit, as (wheel angle in deg) x (speed in km/h).
+  # cap_deg = EPS_YAW_LIMIT_DEG_KMH / speed_kmh. The product is proportional to yaw rate,
+  # so this is a constant-yaw-rate limit. Past its own limit the EPS stops following the
+  # command, holds its echoed TARGET_ANGLE, then drops lane keeping and latches STATE 11
+  # about 0.5 s later - the "Turn Exceeds Steering Limit" + "Steering Assist Temporarily
+  # Unavailable" pair, mid-corner.
+  # The EPS drops lane keeping at a product of 3155 and above. 3000 keeps a margin under
+  # it. test_angle_limit.py holds the observed drop-out points and fails if this constant
+  # rises above any of them.
+  # Bounded in speed: STEER_ANGLE_MAX is tighter under 7.7 km/h and the ISO lateral-accel
+  # limiter above is tighter over 47.8 km/h, so this clamp acts only between the two. It
+  # is 16 % tighter than the lateral-accel limiter at 40 km/h and 6 % at 45 km/h. If that
+  # costs cornering authority, add a speed ceiling. Do not raise the constant.
+  EPS_YAW_LIMIT_DEG_KMH = 3000
 
   # Thresholds on DRIVER_EPS_TORQUE. That signal is masked while the EPS steers, so these
   # two are not used for override. Keep them only for compatibility.
