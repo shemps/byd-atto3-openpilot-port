@@ -80,44 +80,40 @@ index f606249a..5a9a3a5d 100644
  
  PLATFORMS: dict[str, Platform] = {str(platform): platform for brand in BRANDS for platform in brand}
 diff --git a/opendbc_repo/opendbc/safety/safety.h b/opendbc_repo/opendbc/safety/safety.h
-index 36aa0c87..3e92c625 100644
 --- a/opendbc_repo/opendbc/safety/safety.h
 +++ b/opendbc_repo/opendbc/safety/safety.h
-@@ -21,6 +21,7 @@
- #include "safety/safety_volkswagen_pq.h"
- #include "safety/safety_elm327.h"
- #include "safety/safety_body.h"
-+#include "safety/safety_byd.h"
+@@ -29,6 +29,7 @@
+ #include "opendbc/safety/modes/elm327.h"
+ #include "opendbc/safety/modes/body.h"
+ #include "opendbc/safety/modes/psa.h"
++#include "opendbc/safety/modes/byd.h"
+ #include "opendbc/safety/modes/hyundai_canfd.h"
  
- // CAN-FD only safety modes
- #ifdef CANFD
-@@ -54,6 +55,7 @@
- #define SAFETY_STELLANTIS 25U
- #define SAFETY_FAW 26U
- #define SAFETY_BODY 27U
-+#define SAFETY_BYD 35U
- #define SAFETY_HYUNDAI_CANFD 28U
+ uint32_t GET_BYTES(const CANPacket_t *msg, int start, int len) {
+@@ -424,6 +425,7 @@
+     {SAFETY_MG, &mg_hooks},
+     {SAFETY_CHRYSLER_CUSW, &chrysler_cusw_hooks},
+     {SAFETY_PSA, &psa_hooks},
++    {SAFETY_BYD, &byd_hooks},
+     {SAFETY_SUBARU_PREGLOBAL, &subaru_preglobal_hooks},
+     {SAFETY_VOLKSWAGEN_MLB, &volkswagen_mlb_hooks},
+     {SAFETY_VOLKSWAGEN_PQ, &volkswagen_pq_hooks},
+diff --git a/opendbc_repo/opendbc/safety/declarations.h b/opendbc_repo/opendbc/safety/declarations.h
+--- a/opendbc_repo/opendbc/safety/declarations.h
++++ b/opendbc_repo/opendbc/safety/declarations.h
+@@ -34,6 +34,7 @@
+ #define SAFETY_PSA 31U
  #define SAFETY_RIVIAN 33U
  #define SAFETY_VOLKSWAGEN_MEB 34U
-@@ -422,6 +424,7 @@ int set_safety_hooks(uint16_t mode, uint16_t param) {
-     {SAFETY_HYUNDAI_LEGACY, &hyundai_legacy_hooks},
-     {SAFETY_MAZDA, &mazda_hooks},
-     {SAFETY_BODY, &body_hooks},
-+    {SAFETY_BYD, &byd_hooks},
-     {SAFETY_FORD, &ford_hooks},
-     {SAFETY_RIVIAN, &rivian_hooks},
- #ifdef CANFD
-diff --git a/opendbc_repo/opendbc/safety/tests/libsafety/carrot_test_prelude.h b/opendbc_repo/opendbc/safety/tests/libsafety/carrot_test_prelude.h
-new file mode 100644
-index 00000000..cb239e23
---- /dev/null
-+++ b/opendbc_repo/opendbc/safety/tests/libsafety/carrot_test_prelude.h
-@@ -0,0 +1,5 @@
-+#include <string.h>
-+#include <stdbool.h>
-+// putui/puth/print now come from board/fake_stm.h in wip - no macro stub needed
-+bool safety_tx_buffered_for_fwd = false;
-+// carrot fork: test-build stubs for fw-side symbols
++#define SAFETY_BYD 35U
+ #define SAFETY_MG 38U
+ 
+ #define GET_BIT(msg, b) ((bool)!!(((msg)->data[((b) / 8U)] >> ((b) % 8U)) & 0x1U))
+@@ -368,3 +369,4 @@
+ extern const safety_hooks rivian_hooks;
+ extern const safety_hooks psa_hooks;
+ extern const safety_hooks mg_hooks;
++extern const safety_hooks byd_hooks;
 diff --git a/openpilot/selfdrive/pandad/panda_safety.cc b/openpilot/selfdrive/pandad/panda_safety.cc
 index 32d129bc..768285c2 100644
 --- a/openpilot/selfdrive/pandad/panda_safety.cc

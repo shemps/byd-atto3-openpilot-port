@@ -11,7 +11,13 @@ thresholds here and there in sync. Both decode RADAR_TRACK_00..09
 Signal semantics (tembikai DBC claims, arbitrated by the replay validator —
 see the validator report in byd_port/ before trusting scaling changes):
   TRACK_ID    0-254 live, 255 = empty slot
-  LONG_DIST   m ahead of the radar (front bumper FLR)
+  LONG_DIST   m from the ego REAR-AXLE origin (ISO 8855 vehicle frame) - NOT from
+              the sensor face, which is what this line claimed until 2026-08-19.
+              Measured +3.2 m long against four leads of known body width, cars and
+              trucks alike (FINDINGS §16). Left RAW here on purpose: this module is
+              the decode reference the replay validator scores, so its numbers must
+              stay comparable with the validated report. The openpilot-facing
+              conversion lives in radar_interface.py (BUMPER_TO_RADAR_ORIGIN_M).
   LAT_DIST    m lateral
   VLEAD       m/s (relative vs absolute is decided by the validator)
   ALEAD       m/s^2

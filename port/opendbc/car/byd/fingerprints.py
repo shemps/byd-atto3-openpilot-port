@@ -4,7 +4,7 @@ from opendbc.car.byd.values import CAR
 
 Ecu = CarParams.Ecu
 
-# Atto 3 (Yuan Plus EV), 2024 RHD export. Bus-0 chassis set: union of 23.2M frames
+# Atto 3 (Yuan Plus EV), 2024 Bangkok. Bus-0 chassis set: union of 23.2M frames
 # across 13 listen-only drives, confirmed live against the panda (every live ID
 # is in this set, zero DLC mismatches). Includes idle/ADAS-only IDs so the
 # candidate stays a superset of anything the car emits at fingerprint time.

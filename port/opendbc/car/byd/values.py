@@ -1,17 +1,13 @@
 from dataclasses import dataclass, field
 from enum import IntFlag, StrEnum
 
-from opendbc.car import ACCELERATION_DUE_TO_GRAVITY, Bus, CarSpecs, DbcDict, PlatformConfig, Platforms, structs
-from opendbc.car.lateral import AngleSteeringLimits, ISO_LATERAL_ACCEL
+from opendbc.car import Bus, CarSpecs, DbcDict, PlatformConfig, Platforms, structs
+from opendbc.car.lateral import AngleSteeringLimitsVM
 from opendbc.car.docs_definitions import CarDocs, CarHarness, CarParts
 from opendbc.car.fw_query_definitions import FwQueryConfig, Request, StdQueries
 from opendbc.car.vin import Vin
 
 Ecu = structs.CarParams.Ecu
-
-
-# Add extra tolerance for average banked road since safety doesn't have the roll
-AVERAGE_ROAD_ROLL = 0.06  # ~3.4 degrees, 6% superelevation. higher actual roll lowers lateral acceleration
 
 
 class CarControllerParams:
@@ -20,28 +16,30 @@ class CarControllerParams:
   # On a fault STEERING_TORQUE.LKS_PREPARED goes from 0 to 1.
   # STEERING_TORQUE.MAIN_TORQUE is saturated at -300 for around 900ms,
   # while the wheel sits 15-26 deg past the commanded TARGET_ANGLE.
-  ANGLE_LIMITS: AngleSteeringLimits = AngleSteeringLimits(
+  # MAX_LATERAL_ACCEL/JERK: upstream defaults (~3.6 = ISO + average-banked-road roll
+  # tolerance) match the values this port validated on-car.
+  ANGLE_LIMITS: AngleSteeringLimitsVM = AngleSteeringLimitsVM(
     390,  # deg
-    # BYD uses a vehicle model instead, check carcontroller.py for details
-    ([], []),
-    ([], []),
-
-    # Vehicle model angle limits
-    # Add extra tolerance for average banked road since safety doesn't have the roll
-    MAX_LATERAL_ACCEL=ISO_LATERAL_ACCEL + (ACCELERATION_DUE_TO_GRAVITY * AVERAGE_ROAD_ROLL),  # ~3.6 m/s^2
-    MAX_LATERAL_JERK=3.0 + (ACCELERATION_DUE_TO_GRAVITY * AVERAGE_ROAD_ROLL),  # ~3.6 m/s^3
+    # limit angle rate to both prevent a fault and for low speed comfort (deg/20ms frame);
+    # raised 2->3 for tighter sharp-curve tracking (rt56 hit the 2-cap on the sharpest ~1%,
+    # wheel lagged cmd 27-40deg p90 -> cut wide). Stock Veoneer max=4.8 (5 caused 29deg
+    # spikes/shaky wheel), so 3 stays within the safe stock range.
+    MAX_ANGLE_RATE=3,  # deg/20ms
   )
-  # limit angle rate to both prevent a fault and for low speed comfort (deg/20ms frame);
-  # carrot's AngleSteeringLimits has no such field - passed to apply_vm_steer_angle_limits instead
-  MAX_ANGLE_RATE = 3  # deg/20ms; raised 2->3 for tighter sharp-curve tracking (rt56 hit the 2-cap on
-                     # the sharpest ~1%, wheel lagged cmd 27-40deg p90 -> cut wide). Stock Veoneer max=4.8
-                     # (5 caused 29deg spikes/shaky wheel), so 3 stays within the safe stock range.
 
-  STEER_DRIVER_OVERRIDE = 10   # EPS torque threshold for soft override
-  STEER_DRIVER_DISENGAGE = 30  # EPS torque threshold for hard disengage
+  STEER_DRIVER_OVERRIDE = 10   # EPS torque threshold for soft override (LEGACY - DRIVER_EPS_TORQUE)
+  STEER_DRIVER_DISENGAGE = 30  # EPS torque threshold for hard disengage (LEGACY - DRIVER_EPS_TORQUE)
+  # Real driver-torque override threshold, in Nm, on 0x1FC STEERING_TORQUE.DRIVER_TORQUE.
+  # steeringPressed keys on THIS, not on DRIVER_EPS_TORQUE, which is masked/noisy once the
+  # EPS is in state 10 - the exact window openpilot is steering (route 0000015d: the driver
+  # fought a wrong U-turn at 23-29 Nm and DRIVER_EPS_TORQUE stayed 0-34 noise, so no override
+  # fired). Measured: DRIVER_TORQUE median 1.3 Nm engaged (18.8 min), so 18 Nm is well clear
+  # of hands-on noise (5 override events, all sustained, median 6.3 s) yet catches a real
+  # fight instantly. FINDINGS §17 / TASKS #56 defect A.
+  STEER_DRIVER_TORQUE_OVERRIDE_NM = 18
 
   # Longitudinal (LONG_PLAN.md LG2). Comfort envelope, well inside the safety cap
-  # (safety_byd.h enforces -3.5..+2.0 on 0x32E). ISO 15622 defaults; tune in LG4.
+  # (safety modes/byd.h enforces -3.5..+2.0 on 0x32E). ISO 15622 defaults; tune in LG4.
   # 0x32E ACCEL_CMD field itself resolves to 0.05 m/s^2/LSB over -5..+7.75.
   ACCEL_MIN = -3.0  # m/s^2  (stock camera comfort-braked to -2.55 max on tape)
   ACCEL_MAX = 1.5   # m/s^2  (comfort cap; was 2.0 - the PID wound to +2.0 on rt 53. tune up in LG4)
@@ -118,6 +116,9 @@ FW_QUERY_CONFIG = FwQueryConfig(
   ],
   # the MPC camera answers OBD DTC scans but not the bus-0 DID sweep, so its FW may be missing
   non_essential_ecus={Ecu.fwdCamera: [CAR.BYD_ATTO_3]},
+  # BYD F195 supplier-software-version payloads are 6 raw bytes (BCD-ish date +
+  # revision fields, not ASCII) - see fingerprints.py. Full-match any 6 bytes.
+  fw_version_regex=rb"[\x00-\xff]{6}",
   match_fw_to_car_fuzzy=match_fw_to_car_fuzzy,
 )
 

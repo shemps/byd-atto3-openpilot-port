@@ -75,8 +75,9 @@ The code in [`port/`](port/) is derived work. It builds on, and in places is ada
 
 - [openpilot](https://github.com/commaai/openpilot) and [opendbc](https://github.com/commaai/opendbc) by
   comma.ai, MIT licensed.
-- [carrotpilot](https://github.com/ajouatom/carrotpilot) by ajouatom, an openpilot fork. The files in
-  `port/` target this fork's APIs.
+- [carrotpilot](https://github.com/ajouatom/carrotpilot) by ajouatom, an openpilot fork. This port was
+  developed on that fork until 2026-08-14. The files in `port/` now target released openpilot 0.11.2, but
+  parts of them were written against carrotpilot first.
 - bukapilot by iXcess / KommuAI, an openpilot fork, which is the origin of the earlier BYD work this port
   started from.
 

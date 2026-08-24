@@ -10,7 +10,7 @@ Run: .venv/bin/python opendbc_repo/opendbc/car/byd/test_radar_interface_gate.py
 import sys
 
 from opendbc.car import structs
-from opendbc.car.byd.radar_interface import RadarInterface, TRIGGER_MSG, N_SLOTS
+from opendbc.car.byd.radar_interface import RadarInterface, TRIGGER_MSG, N_SLOTS, BUMPER_TO_RADAR_ORIGIN_M
 
 checks = []
 def chk(name, cond):
@@ -48,7 +48,7 @@ def make_ri():
 
 def cycle(ri):
     ret = ri.update(b"")
-    return ret, ri.pts[0].measured
+    return ret, 0 in ri.pts
 
 
 print("== confident track (regression) ==")
@@ -56,7 +56,24 @@ ri = make_ri()
 ri.rcp.set(0, 7, 50.0, 0.5, 12.0, 1.0)
 ret, m = cycle(ri)
 chk("conf 1.0 accepted on first cycle", m)
-chk("dRel/vRel/vLead mapped", abs(ri.pts[0].dRel - 50.0) < 1e-6 and abs(ri.pts[0].vRel - 2.0) < 1e-6)
+# dRel is BUMPER-referenced while LONG_DIST comes from the ego rear-axle origin
+# (FINDINGS 16), so a 50 m track publishes 50 - BUMPER_TO_RADAR_ORIGIN_M
+# tolerance 1e-3, not 1e-6: RadarPoint.dRel is stored as float32, and unlike the
+# old exact 50.0 the corrected value is not representable (46.4 -> 46.4000015)
+chk("dRel origin-corrected, vRel mapped",
+    abs(ri.pts[0].dRel - (50.0 - BUMPER_TO_RADAR_ORIGIN_M)) < 1e-3
+    and abs(ri.pts[0].vRel - 2.0) < 1e-6)
+
+print("== range origin: a track inside the offset is not a lead behind the bumper ==")
+ri = make_ri()
+ri.rcp.set(0, 7, BUMPER_TO_RADAR_ORIGIN_M - 0.6, 0.0, 12.0, 1.0)   # 3.0 m raw
+_, m = cycle(ri)
+chk("raw range under the origin offset dropped", not m)
+ri = make_ri()
+ri.rcp.set(0, 7, BUMPER_TO_RADAR_ORIGIN_M + 1.4, 0.0, 12.0, 1.0)   # 5.0 m raw
+_, m = cycle(ri)
+chk("just outside the offset kept, 1.4 m ahead of the bumper",
+    m and abs(ri.pts[0].dRel - 1.4) < 1e-3)
 
 print("== cut-in gate: low-conf close co-moving newborn ==")
 ri = make_ri()
@@ -93,7 +110,7 @@ _, m = cycle(ri)
 chk("...and re-arms on the next cycle", m)
 ri.rcp.set(0, 255, 0.0, 0.0, 0.0, 0.0)  # track leaves
 cycle(ri)
-chk("empty tid clears slot state", 0 not in ri.seen and not ri.pts[0].measured)
+chk("empty tid clears slot state", 0 not in ri.seen and 0 not in ri.pts)
 ri.rcp.set(0, 8, 8.0, 1.0, 12.0, 0.0)   # same tid returns
 _, m = cycle(ri)
 chk("returning tid needs fresh debounce", not m)

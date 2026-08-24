@@ -30,19 +30,22 @@ class CarState(CarStateBase):
     self.lkas_hud = {}
     # POC no-MVS4 button engage: cruiseState.enabled latches on a SET/RES press and clears
     # on brake/gas/LKAS/ACC button, independent of the stock ACC state. Mirrors the panda
-    # safety param 0x1000 latch (see safety_byd.h) - both are enabled by POC_BTN_ENGAGE=1.
+    # safety param 0x1000 latch (see modes/byd.h) - both are enabled by POC_BTN_ENGAGE=1.
     self.poc_btn_engage = os.getenv("POC_BTN_ENGAGE") == "1"
     self.btn_latch = False
     self.btn_prev = False
-    # openpilot longitudinal (LONG_PLAN.md LG2): the set-speed is owned by carrot's
-    # VCruiseCarrot (selfdrive/car/cruise.py via card.py), which reads standard
-    # buttonEvents - NOT cruiseState.speed (ignored when pcmCruise=False). The rocker
-    # therefore emits buttonEvents; route 00000058 proved an internal set-speed
-    # counter steps fine but never reaches the planner or the UI.
+    # openpilot longitudinal (LONG_PLAN.md LG2): the set-speed is owned by the cruise
+    # helper (selfdrive/car/cruise.py via card.py), which reads standard buttonEvents -
+    # NOT cruiseState.speed (ignored when pcmCruise=False). The rocker therefore emits
+    # buttonEvents; route 00000058 proved an internal set-speed counter steps fine but
+    # never reaches the planner or the UI.
     self.op_long = os.getenv("USE_OP_LONG") == "1"
     self.rocker_prev = False
     self.rocker_pending = False
     self.rocker_state = 0    # 0=released, else ROCKER_DOWN/ROCKER_UP latched at confirm
+    # EPS state-11 debounce, see the dropout block in update()
+    self.eps_dropout_frames = 0
+    self.btn_engage_edge = False  # latch rising edge, consumed by update_button_enable()
 
   def update(self, can_parsers) -> structs.CarState:
     cp = can_parsers[Bus.pt]
@@ -58,9 +61,21 @@ class CarState(CarStateBase):
 
     # steering wheel
     ret.steeringAngleDeg = cp.vl["STEER_MODULE_2"]["STEER_ANGLE_2"]
-    ret.steeringTorque = cp.vl["STEERING_TORQUE"]["MAIN_TORQUE"]
-    ret.steeringTorqueEps = cp.vl["STEER_MODULE_2"]["DRIVER_EPS_TORQUE"]
-    ret.steeringPressed = self.update_steering_pressed(abs(ret.steeringTorqueEps) > CCP.STEER_DRIVER_OVERRIDE, 5)
+    ret.steeringTorque = cp.vl["STEERING_TORQUE"]["MAIN_TORQUE"]        # EPS MOTOR effort (not the driver)
+    ret.steeringTorqueEps = cp.vl["STEER_MODULE_2"]["DRIVER_EPS_TORQUE"]  # masked in EPS state 10 - kept for logs only
+    # OVERRIDE off the REAL driver signal: 0x1FC STEERING_TORQUE.DRIVER_TORQUE (0.1 Nm/bit,
+    # already parsed for LKS_PREPARED below), NOT DRIVER_EPS_TORQUE which is masked exactly
+    # when openpilot is steering (route 0000015d defect A). steerOverride is ET.OVERRIDE_LATERAL:
+    # openpilot yields lateral to the driver and resumes when they relax - it does NOT disengage.
+    driver_torque = cp.vl["STEERING_TORQUE"]["DRIVER_TORQUE"]
+    ret.steeringPressed = self.update_steering_pressed(abs(driver_torque) > CCP.STEER_DRIVER_TORQUE_OVERRIDE_NM, 5)
+    # NO steeringDisengage on this car (the wip does not set it either - it came from
+    # the July structural branch and I restored it in the 0.11.2 port by mistake).
+    # steerDisengage is NO_ENTRY "Steering Pressed" + an immediate USER_DISABLE, and
+    # DRIVER_EPS_TORQUE is not trustworthy here: it is masked/noisy once the EPS is in
+    # state 10, so the >30 threshold fired without the driver touching the wheel and
+    # blocked engagement outright (in-car 2026-08-02, route 000000f2: 3 steerDisengage
+    # events). steeringPressed above still raises the soft lateral-override alert.
 
     # LKAS_STATE follows the BYD TJA_STATE_* enum: 0=Off, 1=Passive, 2/3=Active, 4=Fault.
     # LKS_PREPARED on the EPS is also 1 at route start before any engagement, so it can't be
@@ -76,14 +91,21 @@ class CarState(CarStateBase):
     # decodes the nibble as bits, not a STATE enum: 9=PREPARED(+bit3), 10=ACTIVATED(+bit3),
     # 11=PREPARED+ACTIVATED(+bit3) -> both bits set is the latched-dropout signature
     # (bit3 is undecoded and constant-1 in every capture; bench name: byd_general_pt STATE).
+    # DEBOUNCED: state 11 (both bits) is TRANSITIONAL, not automatically a fault - it
+    # appears for ~100-200 ms whenever the 0x1E2 source changes or briefly gaps, e.g.
+    # at the engage handover when the panda stops forwarding the camera's frames.
+    # Reporting it instantly was a deadlock: in-car 2026-08-02 route 000000f5, EVERY
+    # state-11 onset landed 0.22-0.24 s after an LKAS press (the press blocks the
+    # camera before openpilot streams), so steerTempUnavailable NO_ENTRY refused the
+    # very engagement that would have started our stream. A REAL latched dropout
+    # persists indefinitely, so require ~0.5 s (card runs at 100 Hz).
     lks_prepared = bool(cp.vl["STEERING_TORQUE"]["LKS_PREPARED"])
     lks_activated = bool(cp.vl["STEERING_TORQUE"]["CRUISE_ACTIVATED"])
-    eps_dropout = lks_prepared and lks_activated
-    ret.steerFaultTemporary = ret.steerFaultTemporary or eps_dropout
-    # Reconstructed 0x1FC state nibble (8=off, 9=prepared, 10=steering, 11=latched dropout)
-    # -> gearStep, which the carrot HUD gear box shows in DRIVE. On this single-speed EV the
-    # Hyundai gear-step slot is dead, so it carries live lateral health instead (UI colors it).
-    ret.gearStep = 8 + int(lks_prepared) + 2 * int(lks_activated)
+    self.eps_dropout_frames = self.eps_dropout_frames + 1 if (lks_prepared and lks_activated) else 0
+    ret.steerFaultTemporary = ret.steerFaultTemporary or (self.eps_dropout_frames > 50)
+    # NOTE: the wip exposed this nibble on carState.gearStep for the drive-review
+    # dashboard; 0.11.2's schema has no gearStep, so the 0112 dashboard decodes
+    # the state straight from raw CAN 0x1FC in the rlog instead (server_0112).
 
     # gas / brake
     # gasPressed from the real accelerator pedal (0x342 GAS_PEDAL, reads 0 at rest), NOT
@@ -93,12 +115,13 @@ class CarState(CarStateBase):
     # during braking (rt51 22=22); RAW_THROTTLE only lies under acceleration. 0.10 deadband
     # ignores light contact/noise; brake still disengages for safety.
     ret.gasPressed = cp.vl["PEDAL"]["GAS_PEDAL"] > 0.10
-    ret.brake = cp.vl["PEDAL"]["BRAKE_PEDAL"]
+    # (0.11.2 removed CarState.brake - the raw pedal float the wip set here; nothing
+    # in this stack reads it, brakePressed below is the control-relevant signal)
     # brakePressed MUST read the exact signal the panda latch reads or the two engage
     # latches desync on a light brake graze -> "Controls Mismatch" (routes 5e/5f,
     # 2026-07-17, mono 747.8: a 1-7 count feather touch cleared only the panda latch).
     # Both sides now read DRIVE_STATE's debounced BRAKE_PRESSED bit (0x242 byte4 bit5,
-    # car threshold ~9 counts; safety_byd.h moved off PEDAL byte1 != 0 same day, fw
+    # car threshold ~9 counts; modes/byd.h moved off PEDAL byte1 != 0 same day, fw
     # flashed via pandad auto-reflash). Keep these two in lockstep forever.
     ret.brakePressed = bool(cp.vl["DRIVE_STATE"]["BRAKE_PRESSED"])
 
@@ -134,19 +157,37 @@ class CarState(CarStateBase):
       # POC engage: the LKAS button (LKAS_ON_BTN = 0x3B0 byte0 bit6, on-car verified)
       # TOGGLES the engage latch; brake/gas clears it. LKAS chosen over the speed
       # rocker (SET/RES bits) because it doesn't nudge the car's ACC. Mirrors the
-      # panda latch in safety_byd.h (both toggle on the same LKAS rising edge).
+      # panda latch in modes/byd.h (both toggle on the same LKAS rising edge).
+      prev_latch = self.btn_latch
       lkas_btn = bool(cp.vl["PCM_BUTTONS"]["LKAS_ON_BTN"])
       if lkas_btn and not self.btn_prev and not ret.brakePressed:
-        # engage-init of the cruise target is VCruiseCarrot's job (it inits from vEgo)
+        # engage-init of the cruise target is the cruise helper's job (it inits from vEgo)
         self.btn_latch = not self.btn_latch
       if ret.brakePressed:  # only brake disengages; gas must not (driver drives on gas)
         self.btn_latch = False
       self.btn_prev = lkas_btn
       ret.cruiseState.available = True
       ret.cruiseState.enabled = ret.cruiseState.enabled or self.btn_latch
+      # Stock engagement wiring. Carrot engaged off the latched cruiseState.enabled
+      # even with pcmCruise=False - STOCK does not (pcm_enable gate in
+      # car_specific.py): with pcmCruise=False it engages ONLY on buttonEnable and
+      # disengages on a cancel buttonEvent. Map the toggle onto exactly that:
+      # latch rising -> buttonEnable; latch dropped by the button -> cancel event.
+      # Brake disengage needs nothing here (selfdrived pedalPressed + the latch
+      # clears above and in the panda). Same on-car behavior as the wip.
+      # NOTE: do NOT assign ret.buttonEnable here - interfaces.py overwrites it
+      # with update_button_enable() after update() returns, so a direct write is
+      # dead (in-car 2026-08-02 route 000000f6: the latch rose on all 27 presses,
+      # cancel events came through, but every buttonEnable was erased and the
+      # state machine never left 'disabled'). The rising edge is delivered
+      # through our update_button_enable() override below instead.
+      self.btn_engage_edge = self.btn_latch and not prev_latch
+      button_events = []
+      if prev_latch and not self.btn_latch and not ret.brakePressed:
+        button_events.append(structs.CarState.ButtonEvent(pressed=True, type=ButtonType.cancel))
       if self.op_long and self.btn_latch:
         # Cruise-speed UP/DOWN ROCKER on 0x3B0 -> standard buttonEvents, which is what
-        # VCruiseCarrot consumes: it steps on the RELEASE edge and does +10 jumps on a
+        # the cruise helper consumes: it steps on the RELEASE edge and does +10 jumps on a
         # long hold. Rocker RE (btn_map.log): SET_BTN (byte0 bit3) = "rocker pressed"
         # both ways; RES_BTN (bit4) = direction modifier, never set alone. Direction
         # latches one frame after the press edge so a rising-edge skew between the two
@@ -165,10 +206,11 @@ class CarState(CarStateBase):
           self.rocker_state = 0
           self.rocker_pending = False
         self.rocker_prev = rocker
-        ret.buttonEvents = create_button_events(self.rocker_state, prev_state, ROCKER_BUTTONS)
+        button_events.extend(create_button_events(self.rocker_state, prev_state, ROCKER_BUTTONS))
       else:
         self.rocker_state = 0
         self.rocker_prev = self.rocker_pending = False
+      ret.buttonEvents = button_events
       if self.btn_latch and ret.cruiseState.speed < 8.3:
         ret.cruiseState.speed = 8.3  # POC: sane floor when stock ACC is off (SET_SPEED=0)
 
@@ -176,6 +218,16 @@ class CarState(CarStateBase):
     self.lkas_hud = copy.copy(cp_cam.vl["LKAS_HUD_ADAS"])
 
     return ret
+
+  def update_button_enable(self, buttonEvents):
+    # interfaces.py calls this after update() and overwrites CarState.buttonEnable
+    # with the result. On the POC path the engage request is the LKAS-latch rising
+    # edge, not a cruise-button falling edge (the base implementation) - and the
+    # base version must NOT run while latched either, or a rocker set-speed
+    # release (accel/decelCruise falling edge) would read as an engage request.
+    if self.poc_btn_engage:
+      return self.btn_engage_edge
+    return super().update_button_enable(buttonEvents)
 
   @staticmethod
   def get_can_parsers(CP):

@@ -3,8 +3,8 @@ import os
 import numpy as np
 
 from opendbc.can.packer import CANPacker
-from opendbc.car import Bus, structs
-from opendbc.car.lateral import apply_vm_steer_angle_limits
+from opendbc.car import Bus, rate_limit, structs
+from opendbc.car.lateral import apply_steer_angle_limits_vm
 from opendbc.car.interfaces import CarControllerBase
 from opendbc.car.byd import bydcan
 from opendbc.car.byd.values import CarControllerParams
@@ -53,11 +53,30 @@ class CarController(CarControllerBase):
     hud_control = CC.hudControl
 
     if self.frame % 2:
-      self.apply_angle_last = apply_vm_steer_angle_limits(actuators.steeringAngleDeg, self.apply_angle_last, CS.out.vEgoRaw,
-                                                          CS.out.steeringAngleDeg, CC.latActive, CarControllerParams, self.VM,
-                                                          MAX_ANGLE_RATE=CarControllerParams.MAX_ANGLE_RATE)
+      new_angle = apply_steer_angle_limits_vm(actuators.steeringAngleDeg, self.apply_angle_last, CS.out.vEgoRaw,
+                                              CS.out.steeringAngleDeg, CC.latActive, CarControllerParams, self.VM)
+      # Low-speed comfort slew cap ON TOP of the limits above. Neither of those binds
+      # at low speed: MAX_ANGLE_RATE is a flat 3 deg/20ms (150 deg/s, a fault bound)
+      # and the ISO lateral-jerk limit scales with 1/v^2 (~8.6 deg/frame at 5 m/s).
+      # 0.11.2 is model-direct (carrot's lat MPC smoothing is gone), so model
+      # curvature noise reached the wheel raw - routes f9/fb 2026-08-02: commanded
+      # angle rate p95 48-72 deg/s below 8 m/s while the wheel followed at 20-30,
+      # felt as low-speed jerkiness. But 1.2 deg/20ms (60 deg/s) was FAR too tight:
+      # the 08-03 drive (route 000000fc, whole drive <= 8.03 m/s so the cap was in
+      # force throughout) pinned 4.7% of engaged frames at the cap, and 15% in the
+      # second before each of 11 driver takeovers - the wheel could not wind fast
+      # enough and the car ran wide. 2.5 (125 deg/s) keeps a damping margin under the
+      # flat 3.0 while clearing real tight-turn demand. This is the interim mitigation;
+      # the root fix is to low-pass the model curvature instead of rate-limiting the
+      # output angle (a rate cap cannot tell noise from a genuine turn) - TASKS #25.
+      # Active only (the inactive path must keep snapping to the measured angle for
+      # the handover).
+      if CC.latActive:
+        max_rate = float(np.interp(CS.out.vEgoRaw, [3.0, 10.0], [2.5, 3.0]))
+        new_angle = rate_limit(new_angle, self.apply_angle_last, -max_rate, max_rate)
+      self.apply_angle_last = new_angle
 
-      # The validated carrot-era safety FORWARDS the camera's own 0x1E2/0x316 to the car
+      # The validated passthrough safety FORWARDS the camera's own 0x1E2/0x316 to the car
       # while disengaged (factory LKS stays healthy) and blocks them only when engaged.
       # Send our regenerated frames ONLY when engaged, or both sources collide on the bus.
       #
@@ -105,6 +124,17 @@ class CarController(CarControllerBase):
       if resume and CS.out.standstill and self.accel_last < 0.0:
         self.accel_last = 0.0
       accel = float(np.clip(target, self.accel_last - down, self.accel_last + up))
+      # ACC_CMD hygiene hysteresis (2026-08-05, route 0000010a whole-drive scan): the
+      # PID closes on wheel-speed aEgo noise, so the command carries ~0.05-0.1 m/s^2
+      # churn the wire cannot even express (ACCEL_CMD scale = 0.05 m/s^2/LSB) and the
+      # drivetrain provably ignores (motor kW static through it; 380-460 direction
+      # reversals/min at cruise). Hold the last sent value for sub-LSB changes; real
+      # demand clears the band on its first sample, so response cost is zero (replay:
+      # braking minima identical, max deviation = the band; reversals 175->121/min,
+      # wire LSB flips 769->501/min). Above walking pace only - stop/launch/stop-bite
+      # keep exact behavior.
+      if CS.out.vEgo > 2.0 and abs(accel - self.accel_last) < 0.04:
+        accel = self.accel_last
       can_sends.append(bydcan.create_acc_cmd(self.packer, accel, True, (self.frame // 3) % 16,
                                              standstill=stopping and CS.out.standstill, resume=resume))
       self.accel_last = accel
