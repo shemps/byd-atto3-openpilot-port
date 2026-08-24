@@ -7,7 +7,8 @@
 This directory holds the files that do not exist in an openpilot release, plus a patch for the ten places
 an existing file has to change. Copy these into your own tree.
 
-Read the [top-level README](../README.md) first. It explains the signals these files implement.
+Read the [porting manual](../README.md) first. It gives the procedure and the signals these files
+implement.
 
 **These files target released openpilot 0.11.2, branch `byd-atto3`.** On another version, check these APIs
 first: `apply_steer_angle_limits_vm`, `AngleSteeringLimitsVM.MAX_ANGLE_RATE`, and the absent
@@ -49,7 +50,7 @@ The patch uses the monorepo paths `opendbc_repo/opendbc/...` and `openpilot/self
 | `panda/board/drivers/can_common.h` | Ignition from `0x242` gear. Openpilot stays offroad without it |
 | `panda/board/main.c` | Put panda bus 1 in bus-monitoring mode so the radar tap cannot ACK |
 | `selfdrive/pandad/panda_safety.cc` | Stay SILENT during a `SKIP_FW_QUERY` fingerprint. An inline panda with no relay otherwise starves the camera and sets lost-communication DTCs |
-| `selfdrive/pandad/pandad_api_impl.py` | Unrelated to BYD. A pycapnp garbage fix, carried here because the port runs on a PC |
+| `selfdrive/pandad/pandad_api_impl.py` | Unrelated to BYD. A pycapnp fix needed on a PC host |
 
 The two `panda/` changes need a panda rebuild and a reflash. The rest is Python and C that builds with the
 rest of the tree.
@@ -57,13 +58,13 @@ rest of the tree.
 **The mode table entry is inside `#ifdef ALLOW_DEBUG`.** Build the panda with `ALLOW_DEBUG`, or move the
 entry out of that block. If you move it, first find out why it is there.
 
-## Order
+## Installation order
 
 1. Copy the new files. Apply `integration.patch`.
 2. Rebuild and reflash the panda.
-3. Fingerprint the car. Check that it matches as `BYD_ATTO_3`.
+3. Fingerprint the vehicle. Check that it matches as `BYD_ATTO_3`.
 4. Run the two tests below.
-5. Drive it somewhere empty before you drive it anywhere else.
+5. Drive the vehicle somewhere empty before you drive it anywhere else.
 
 ## Tests
 
@@ -83,7 +84,7 @@ A PC has no IMU, no camera stack and no known hardware profile. `pc/` covers the
 
 | File | Role |
 |---|---|
-| `pc/can_imu_bridge.py` | Publishes `gyroscope` and `accelerometer` from the car's own `0x222` / `0x223`. Without it `sensord` is silent and `locationd` / `livePose` degrade. Section 10 of the top-level README explains the decode |
+| `pc/can_imu_bridge.py` | Publishes `gyroscope` and `accelerometer` from `0x222` / `0x223`. Without it `sensord` is silent and `locationd` degrades. Section 10 of the manual gives the decode |
 | `pc/pc-host.patch` | `tools/webcam/camera.py`, `tools/webcam/camerad.py`, `system/hardware/pc/hardware.py` |
 
 Run the bridge inside the openpilot venv, after `pandad`. Check the signs before you drive on them:
@@ -101,7 +102,7 @@ python pc/can_imu_bridge.py            # publish
   sees, while the UI still looks correct.
 - **camera.py V4L2 handling.** MJPG forced, capture normalized to the 1928x1208 canvas, stable device paths,
   and per-module control defaults through `WEBCAM_*_CTRLS`. The controls apply on every camera open. Set
-  your own values. The ones here suit two specific modules.
+  values for your own module. The shipped values suit two specific modules.
 
 ## Not here
 
