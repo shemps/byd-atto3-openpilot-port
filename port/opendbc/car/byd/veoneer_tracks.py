@@ -6,13 +6,11 @@ but a different track lifecycle. Keep the thresholds in the two files the same.
 Both decode RADAR_TRACK_00 to RADAR_TRACK_09, addresses 0x280 to 0x289, which are
 64-byte FD frames in byd_radar_fd.dbc.
 
-Signal meanings. The replay validator confirmed each one. Read the validator report
-before you change a scale.
+Signal meanings:
   TRACK_ID    0 to 254 live, 255 = empty slot
   LONG_DIST   m from the ego rear-axle origin, the ISO 8855 vehicle frame. It is not
-              from the sensor face. This module keeps the raw value, because the
-              replay validator scores these numbers. radar_interface.py holds the
-              conversion for openpilot, BUMPER_TO_RADAR_ORIGIN_M.
+              from the sensor face. This module keeps the raw value.
+              radar_interface.py holds the conversion, BUMPER_TO_RADAR_ORIGIN_M.
   LAT_DIST    m lateral
   VLEAD       m/s, absolute
   ALEAD       m/s^2
@@ -20,13 +18,11 @@ before you change a scale.
 """
 
 EMPTY_TRACK_ID = 255
-N_SLOTS = 10          # RADAR_TRACK_00..09; 0x28A-0x29D exist on the bus but are
-                      # not in the DBC — validator reports whether they carry data
+N_SLOTS = 10          # RADAR_TRACK_00..09. 0x28A-0x29D exist on the bus but are
+                      # not in the DBC.
 
-# ponytail: fixed thresholds, tune from validator percentiles if the defaults
-# drop real leads (min_conf) or pass clutter (max_long).
-# The validator percentile report confirms these values. Change them only if a drive
-# shows one of the two symptoms above.
+# Fixed thresholds. Change them only if a drive drops real leads (min_conf) or
+# passes clutter (max_long).
 DEFAULT_EXPIRY_S = 0.5
 DEFAULT_MIN_CONF = 0.30
 DEFAULT_MAX_LONG_M = 200.0

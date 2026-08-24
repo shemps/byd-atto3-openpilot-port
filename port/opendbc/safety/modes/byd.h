@@ -176,13 +176,12 @@ static bool byd_tx_hook(const CANPacket_t *msg) {
   // 0x1E2 angle-command limits. Units: STEER_ANGLE is 0.1 deg/LSB (angle_deg_to_can=10);
   // rate lookups are deg per TX frame (50 Hz -> per 20 ms).
   // - rate 4.0 deg/frame flat: openpilot's own cap is 3.0 (values.py MAX_ANGLE_RATE) at
-  //   every speed, measured p99.9 command delta over 9 routes is <= 3.0, and the stock
-  //   camera's own ceiling is 4.8. 4.0 never blocks a legitimate frame (a blocked active
-  //   frame gaps the EPS stream and gives a state-11 dropout. It still bounds a runaway.
+  //   every speed, and the stock camera ceiling is 4.8. 4.0 never blocks a legitimate
+  //   frame. A blocked active frame gaps the EPS stream and gives a state-11 dropout.
   // - angle-error bound (inlined below; the modern shared checker dropped the
   //   max_angle_error fields): above 3 m/s the command may never be more than 50 deg from
-  //   the measured wheel. The measured p90 command-to-wheel lag in a sharp curve is 27 to
-  //   40 deg, so 50 permits a true command and still bounds a runaway command.
+  //   the measured wheel. 50 permits a true command in a sharp curve and still bounds a
+  //   runaway command.
   // - max_angle 390 deg matches the python-side ANGLE_LIMITS.
   static const AngleSteeringLimits BYD_ATTO3_STEERING_LIMITS = {
     .max_angle = 3900,
@@ -322,8 +321,8 @@ static bool byd_fwd_hook(int bus_num, int addr) {
 }
 
 static safety_config byd_init(uint16_t param) {
-  // Every message safety reads is liveness-checked at its measured stock rate
-  // (v3 log, 46k+ frames each): pedal/brake/speed/angle sources on the car bus,
+  // Every message safety reads is liveness-checked at its stock rate:
+  // pedal/brake/speed/angle sources on the car bus,
   // the ACC_STATE level-track source on the camera bus, buttons at 20 Hz.
   static RxCheck byd_rx_checks[] = {
     {.msg = {{BYD_CANADDR_PEDAL,            BYD_CANBUS_ESC, 8,  50U, .ignore_checksum = true, .ignore_counter = true, .ignore_quality_flag = true}, { 0 }, { 0 }}},

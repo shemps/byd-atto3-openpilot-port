@@ -8,23 +8,18 @@ radard does its own lead processing, so this module supplies vRel only. VLEAD is
 the absolute lead velocity, so vRel needs the ego speed. The ego speed comes from
 the chassis bus, 0x1F0 WHEELSPEED_CLEAN, which is the message carstate reads.
 
-An offline replay of two both-bus drive captures validated each mapping:
-  - Integrity: CRC8/J1850 with DataID passed 287k of 287k frames.
-  - VLEAD is the absolute lead velocity. d(LONG_DIST)/dt follows VLEAD - vEgo
-    with r = 0.93 to 0.95 and slope 0.97 to 0.99.
-      ->  pt.vRel = VLEAD - v_ego
-  - LAT_DIST is already ISO +y = left. In left-hand traffic, oncoming vehicles
-    have a negative LAT.  ->  yRel = +LAT_DIST
-  - LONG_DIST is not referenced to the sensor. It comes from the ego rear-axle
-    origin, so dRel = LONG_DIST - BUMPER_TO_RADAR_ORIGIN_M.
-  - Lead coverage against the fused HUD lead flag of the camera, while the stock
-    ACC was active: 96.6 % and 99.8 % on the two drives.
-  - 0x28A to 0x29D are overflow slots for the 11th object and above. They occur
-    only in dense traffic. They are not in the DBC and this module does not parse
-    them. Add them to byd_radar_fd.dbc if you need them.
+Signal mapping:
+  - Frame integrity is CRC8/J1850 with DataID.
+  - VLEAD is the absolute lead velocity.  ->  pt.vRel = VLEAD - v_ego
+  - LAT_DIST is ISO +y = left.  ->  yRel = +LAT_DIST
+  - LONG_DIST comes from the ego rear-axle origin.
+      ->  dRel = LONG_DIST - BUMPER_TO_RADAR_ORIGIN_M
+  - 0x28A to 0x29D are overflow slots for the 11th object and above. They are not
+    in the DBC and this module does not parse them. Add them to byd_radar_fd.dbc
+    if you need them.
 
 The filter constants are the same as the reference implementation in
-veoneer_tracks.py, which is the bench module the replay validator uses.
+veoneer_tracks.py.
 
 To deploy: interface.py must set radarUnavailable = False, and radarDelay stays
 0.0 until you measure it. byd_radar_fd.dbc is part of the port. The panda bus-1
@@ -50,30 +45,21 @@ EMPTY_TRACK_ID = 255
 IDLE_FRAMES = 20
 IDLE_PUBLISH_DIV = 5
 # Fixed filter thresholds. They are the same as veoneer_tracks.py. Keep the two in
-# agreement. The replay validator percentiles confirm them: CONFIDENCE is binary 0 or 1,
-# so 0.30 is in the dead band. LONG_DIST p99 is 161 m, which is below 200. Lead coverage
-# while the stock ACC was active was 96.6 % and 99.8 %.
+# agreement. CONFIDENCE is binary 0 or 1, so 0.30 sits in the dead band.
 MIN_CONF = 0.30
 MAX_LONG_M = 200.0
 
 # Range origin. LONG_DIST is referenced to the ego rear-axle centre, the ISO 8855 vehicle
-# frame, and not to the sensor face. openpilot dRel must be measured from the front bumper,
-# so subtract the bumper-to-rear-axle distance from each track: front overhang 885 mm from
-# the dimension drawing, plus wheelbase 2720 mm.
-# Measurement: against four leads of known body width the raw range read +3.21, +4.11, +2.04
-# and +3.62 m too far, while the vision lead stayed within 0.1 to 0.8 m of the same geometry.
-# The error on the cars is the same as the error on the truck, so this is the sensor origin
-# and not a reflection point on the target. Over 7863 radar-matched frames the radar-to-vision
-# difference changed from +4.18 m to +0.43 m in the 0 to 12 m stopping band.
+# frame, and not to the sensor face. openpilot dRel is referenced to the front bumper, so
+# subtract the bumper-to-rear-axle distance from each track: front overhang 885 mm plus
+# wheelbase 2720 mm. Without the subtraction every lead reads 3.6 m too far. With it, radar
+# and vision agree to within 0.5 m below 12 m.
 BUMPER_TO_RADAR_ORIGIN_M = 3.60
-# Cut-in gate. On a new track the Veoneer CONFIDENCE goes from 0 to 1 over about 1.9 s.
-# MIN_CONF alone therefore hides a close cut-in from radard for about 1.4 s. Accept a
-# low-confidence track if it is close, inside the corridor, present for 2 cycles or more,
-# and moving in the same direction. VLEAD is absolute, so the 1 m/s limit rejects
-# stationary clutter and oncoming traffic, which are the main false accepts.
-# An offline replay gave 0 phantom leads while the stock ACC was active on two drives.
-# The gate makes a cut-in visible 1.25 to 1.40 s earlier. radard still removes transients
-# shorter than one second from leadOne.
+# Cut-in gate. On a new track the Veoneer CONFIDENCE goes from 0 to 1 over about 1.9 s, so
+# MIN_CONF alone hides a close cut-in from radard for about 1.4 s. Accept a low-confidence
+# track if it is close, inside the corridor, present for 2 cycles or more, and moving in the
+# same direction. VLEAD is absolute, so the 1 m/s limit rejects stationary clutter and
+# oncoming traffic. radard still removes transients shorter than one second from leadOne.
 CUTIN_MAX_LONG_M = 20.0
 CUTIN_MAX_LAT_M = 3.5
 CUTIN_MIN_CYCLES = 2

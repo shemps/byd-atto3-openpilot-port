@@ -32,10 +32,8 @@ def create_acc_cmd(packer, accel: float, long_active: bool, counter: int,
   # resume sends a STANDSTILL_RESUME pulse to pull away from the hold.
   # ACCEL_FACTOR and DECEL_FACTOR are a pair. They move with ACCEL_CMD and tell the IPB
   # which gain profile to use: coast (0,0), soft accel (12,5), soft decel (13,1), and
-  # sustained hard brake (1,1). Measurement on the car gives a delivered-to-commanded
-  # ratio of 1.02 to 1.12 across -0.25 to -1.25. A survey of 78.9k stock-ACC frames shows
-  # (1,1) as the stock pair for every bin from -1.75 to -4.0. Do not use the pair (1,2).
-  # It is only a transition pair in stock, and it causes a brake transient at regime entry.
+  # sustained hard brake (1,1). Do not use the pair (1,2). It causes a brake transient at
+  # regime entry.
   holding = long_active and standstill and not resume
   if not long_active or abs(accel) < 0.1:
     accel_fac, decel_fac = 0, 0
@@ -70,7 +68,7 @@ def create_acc_cmd(packer, accel: float, long_active: bool, counter: int,
 def create_lkas_hud(packer, lat_active: bool, counter: int, stock_lkas_hud: dict, hud_control):
   # 0x316 is a validated safety frame: the ADAS modules cross-check its exact bit
   # pattern every frame and fail-safe on any mismatch (AEB/ACC/LKS/LDWS "limited" +
-  # latched DTCs across 8 modules, measured on a 2024 Atto 3 MVS4). Pass every stock
+  # latched DTCs across 8 modules). Pass every stock
   # bit through untouched - including HANDS_ON_WHEEL_REQ, the camera's hands-on nag.
   values = {**stock_lkas_hud, "COUNTER": counter}
   if lat_active:

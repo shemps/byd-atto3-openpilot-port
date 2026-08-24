@@ -47,7 +47,7 @@ class CarInterface(CarInterfaceBase):
     # stock ACC off, and the panda safety enforces the accel limits.
     ret.openpilotLongitudinalControl = os.getenv("USE_OP_LONG") == "1"
     if ret.openpilotLongitudinalControl:
-      ret.longitudinalActuatorDelay = 0.5   # measured plant lag, best fit +550 ms
+      ret.longitudinalActuatorDelay = 0.5   # plant lag
       ret.stopAccel = -0.5
       # 0.11.2 has no vEgoStopping, vEgoStarting, startAccel or startingState. longcontrol
       # goes from stopping to pid and never enters a starting state, so there is no launch
@@ -61,9 +61,9 @@ class CarInterface(CarInterfaceBase):
       #
       # There is no P term. 0.11.2 has no longitudinalTuning.kpBP or kpV, and longcontrol
       # builds its PID with kp = 0 for every car. longcontrol closes on a_target minus
-      # CS.aEgo. On this car aEgo comes from wheel speed and carries about 15 m/s^3 of p95
-      # jerk noise, which a P term turns into command churn. ki trims the remaining IPB
-      # model error. Check the steady-state accel error on a long drive.
+      # CS.aEgo. On this car aEgo comes from wheel speed and carries jerk noise, which a P
+      # term turns into command churn. ki trims the remaining IPB model error. Check the
+      # steady-state accel error on a long drive.
       ret.longitudinalTuning.kiBP = [0.0, 35.0]
       ret.longitudinalTuning.kiV = [0.01, 0.01]
 
