@@ -4,19 +4,18 @@
 > acceleration of a moving vehicle. It is not claimed to be correct or safe, and it is not claimed to work on
 > your vehicle. Read [../DISCLAIMER.md](../DISCLAIMER.md) before you use any of it.
 
-This directory is the delta. It holds the files that do not exist in an openpilot release, plus a patch for
-the ten places an existing file has to change. There is no openpilot tree here — copy these into your own.
+This directory holds the files that do not exist in an openpilot release, plus a patch for the ten places
+an existing file has to change. Copy these into your own tree.
 
-Read the [top-level README](../README.md) first. It explains the signals and the control messages that these
-files implement.
+Read the [top-level README](../README.md) first. It explains the signals these files implement.
 
-**These files target released openpilot 0.11.2, on a branch named `byd-atto3`.** They use upstream APIs
-only: `apply_steer_angle_limits_vm` and `AngleSteeringLimitsVM.MAX_ANGLE_RATE` for the angle limits, and no
+**These files target released openpilot 0.11.2, branch `byd-atto3`.** On another version, check these APIs
+first: `apply_steer_angle_limits_vm`, `AngleSteeringLimitsVM.MAX_ANGLE_RATE`, and the absent
 `CarState.brake`, `CarState.gearStep`, `radarTimeStep`, `vEgoStopping`, `vEgoStarting`, `startAccel`,
-`startingState`, `longitudinalTuning.kpBP` or `kpV`. On a different openpilot version, check these first.
+`startingState`, `longitudinalTuning.kpBP` and `kpV`.
 
-The patch uses the monorepo paths `opendbc_repo/opendbc/...` and `openpilot/selfdrive/...`. In a standalone
-opendbc checkout, remove the `opendbc_repo/` prefix.
+The patch uses the monorepo paths `opendbc_repo/opendbc/...` and `openpilot/selfdrive/...`. Remove the
+`opendbc_repo/` prefix in a standalone opendbc checkout.
 
 ## New files
 
@@ -73,51 +72,42 @@ python opendbc/car/byd/test_radar_interface_gate.py     # radar cut-in gate, no 
 pytest opendbc/safety/tests/test_byd.py                 # safety rules against libsafety
 ```
 
-`test_byd.py` is a standard opendbc safety test with 22 cases. The opendbc pytest, mutation, coverage and
-MISRA tools find it by that name. Build `libsafety` with the opendbc build first.
+Build `libsafety` with the opendbc build first. `test_byd.py` has 22 cases and carries the standard name,
+so the opendbc pytest, mutation, coverage and MISRA tools find it.
 
 Passing them proves nothing beyond the tests themselves. They are not validation and not a safety case.
 
 ## Running on a PC
 
-A comma device supplies an IMU, a camera stack, and a known hardware profile. A PC supplies none of them.
-`pc/` covers the gap.
+A PC has no IMU, no camera stack and no known hardware profile. `pc/` covers the gap.
 
 | File | Role |
 |---|---|
 | `pc/can_imu_bridge.py` | Publishes `gyroscope` and `accelerometer` from the car's own `0x222` / `0x223`. Without it `sensord` is silent and `locationd` / `livePose` degrade. Section 10 of the top-level README explains the decode |
 | `pc/pc-host.patch` | `tools/webcam/camera.py`, `tools/webcam/camerad.py`, `system/hardware/pc/hardware.py` |
 
-Run the bridge inside the openpilot venv, after `pandad`, and check the signs before you drive on them:
+Run the bridge inside the openpilot venv, after `pandad`. Check the signs before you drive on them:
 
 ```
 python pc/can_imu_bridge.py --print    # print decoded values, publish nothing
 python pc/can_imu_bridge.py            # publish
 ```
 
-`pc-host.patch` carries three things. The first two are needed for the webcam path to work at all:
+`pc-host.patch` carries three changes. The webcam path needs the first two to work at all.
 
-- **camerad timestamp.** Stock `camerad.py` stamps frames `frame_id * 50 ms`, which starts near zero. Fed by
-  a real-clock IMU, `locationd` then rejects every `cameraOdometry` observation as older than its own filter
-  time. The patch stamps `CLOCK_BOOTTIME` instead. This one pairs with the IMU bridge — the bridge alone does
-  not help while the camera clock disagrees with it.
-- **NV12 device layout.** The model's warp kernels expect row-stride-padded NV12. Publishing tight-packed
-  rows shears every frame the model sees while the UI still looks correct.
-- **camera.py V4L2 handling**: MJPG forced, capture normalized to the 1928x1208 canvas, and stable device
-  paths instead of `/dev/videoN` ordering. Per-module control defaults, with `WEBCAM_*_CTRLS` to carry
-  qv4l2-found values into a launcher. The controls apply on every camera open, not only at launch. A USB re-enumeration
-  resets the module to its vendor defaults mid-drive, and a launch-time setting does not come back. Read
-  section 9 of the top-level README before you use the values in it — they suit two specific modules and do
-  not transfer.
-
-Not covered here, because it is rig-specific rather than port-specific: the launcher scripts, process
-pinning, and the GPS source. openpilot runs without GPS. A USB NMEA receiver on the `ubloxd` path is one way
-to add one.
+- **camerad timestamp.** Stamp frames with `CLOCK_BOOTTIME`. Stock `camerad.py` stamps `frame_id * 50 ms`,
+  which starts near zero, and `locationd` then rejects every `cameraOdometry` observation as too old.
+- **NV12 device layout.** Publish row-stride-padded NV12. Tight-packed rows shear every frame the model
+  sees, while the UI still looks correct.
+- **camera.py V4L2 handling.** MJPG forced, capture normalized to the 1928x1208 canvas, stable device paths,
+  and per-module control defaults through `WEBCAM_*_CTRLS`. The controls apply on every camera open. Set
+  your own values. The ones here suit two specific modules.
 
 ## Not here
 
-The capture and decode tooling, the drive-review dashboard, the launcher scripts, the tuning work, and the
-panda binary. Build the panda from source — do not flash a signed binary you cannot audit.
+The capture and decode tooling, the drive-review dashboard, the launcher scripts, process pinning, the
+tuning work, the GPS source, and the panda binary. openpilot runs without GPS. Build the panda from source.
+Do not flash a signed binary you cannot audit.
 
 ## Environment switches
 
