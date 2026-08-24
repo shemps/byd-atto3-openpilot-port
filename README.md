@@ -276,6 +276,16 @@ which sets latched DTCs in eight modules. The DBC in `port/` adds `PT1` to `PT4`
 Read the object tracks from the private CAN, `0x280` to `0x289`. The chassis CAN carries only a lead flag
 and the accel command. PR #3337 sets `radarUnavailable = True`.
 
+The track signal layout in `byd_radar_fd.dbc` comes from
+[tembikaipilot](https://github.com/danielks23/tembikaipilot) by danielks23, a bukapilot fork with a full FD
+radar decode. Use their layout for `TRACK_ID`, `LONG_DIST`, `LAT_DIST`, `VLEAD`, `ALEAD`, `CONFIDENCE` and
+the alternate distance fields.
+
+Two fields in that layout are corrected here. `COUNTER12_1` at `0|12` and `COUNTER12_2` at `256|12` are not
+12-bit counters. Byte 0 and byte 32 are frame checksums, and the counter is the low nibble of byte 1 and
+byte 33. The corrected DBC in `port/` uses `CHECKSUM 0|8` + `COUNTER 8|4` and `CHECKSUM_2 256|8` +
+`COUNTER_2 264|4`. The track payload in bytes 2 and above is unaffected.
+
 Subtract the vehicle geometry from `LONG_DIST`. It is measured from the rear-axle centre, the ISO 8855
 vehicle frame, not from the sensor face:
 
@@ -292,6 +302,31 @@ the cut-in window after the correction as well, or it is 3.6 m shorter than the 
 
 Keep raw values in the decode reference that your replay validator scores. Put the conversion in the
 openpilot-facing interface.
+
+### Private-bus frame integrity
+
+Every private-bus frame carries a checksum in byte 0. Use it to prove a decode, and to reject a corrupt
+frame. Do not register it as an opendbc DBC checksum. It is per-message keyed, not the chassis nibble, so
+exempt `byd_radar` when you register `byd_checksum` for the `byd_` DBCs.
+
+```
+# 32-byte IDs: 0x250, and 0x2C0 to 0x2E7
+byte0  = CRC8(poly=0x1D, init=0x00, data[1:32])  XOR K[id]
+
+# 64-byte IDs: 0x280 to 0x29D. Two independently protected 32-byte halves
+byte0  = CRC8(poly=0x1D, init=0x00, data[1:32])  XOR K1[id]
+byte32 = CRC8(poly=0x1D, init=0x00, data[33:64]) XOR K2[id]
+```
+
+- Poly `0x1D` is CRC-8/SAE-J1850, the AUTOSAR E2E family. MSB first, not reflected.
+- The 4-bit free-running counter is the low nibble of byte 1, and of byte 33 for the second half. It sits
+  inside the protected payload.
+- `K` is a per-message constant that folds `init`, `xorout` and the AUTOSAR DataID into one XOR. It is not a
+  function of the CAN ID. Harvest one `K` per ID from a log of your own vehicle.
+- `0x100` does not use this scheme. It is a separate 8-byte frame and is still undecoded.
+
+Credit: opendbc's Subaru support pointed at this scheme. EyeSight uses a Veoneer camera, and its
+`subaru_checksum` is also a byte-0 scheme. The Subaru formula itself does not fit these frames.
 
 ---
 

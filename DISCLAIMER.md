@@ -80,6 +80,12 @@ The code in [`port/`](port/) is derived work. It builds on, and in places is ada
   parts of them were written against carrotpilot first.
 - bukapilot by iXcess / KommuAI, an openpilot fork, which is the origin of the earlier BYD work this port
   started from.
+- [tembikaipilot](https://github.com/danielks23/tembikaipilot) by danielks23, a bukapilot fork. Its
+  `byd_radar_fd.dbc` is the source of the Veoneer FD radar track layout in `port/opendbc/dbc/byd_radar_fd.dbc`.
+  Two fields are corrected here, as section 8 of the manual describes. The rest of the layout is theirs.
+- [opendbc PR #3337](https://github.com/commaai/opendbc/pull/3337) by lukasloetkolben, the source of
+  `byd_atto3.dbc`. Section 5 of the manual marks the one signal name in it that this port treats as
+  unconfirmed.
 
 Copyright in those portions remains with their respective authors under their respective licenses. The MIT
 license in [LICENSE](LICENSE) covers this repository's own contribution and does not override or extend to
