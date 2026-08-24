@@ -129,9 +129,10 @@ Take ignition from CAN. Any valid gear in `DRIVE_STATE` (`0x242`) means ignition
 
 Read the driver torque from `0x1FC STEERING_TORQUE.DRIVER_TORQUE`, 0.1 Nm/LSB.
 
-Set the override threshold to **18 Nm**, then fit your own. Basis: the median is 1.3 Nm while engaged.
+Set the override threshold to **18 Nm**. Hands-off torque reads about 1 Nm while engaged. Raise the
+threshold if your vehicle reads higher.
 
-The sign is **positive left**. Basis: manual turns read +17.9 Nm left and −16.6 Nm right.
+The sign is **positive left**. Check it on a manual turn. A left turn gives about +18 Nm.
 
 Do not use `STEER_MODULE_2.DRIVER_EPS_TORQUE` for override. The vehicle masks it while the EPS steers.
 
@@ -204,38 +205,37 @@ The EPS does not hold every angle openpilot commands. In a tight turn it stops l
 wheel to the driver mid-corner. openpilot shows "Turn Exceeds Steering Limit", then "Steering Assist
 Temporarily Unavailable". One event causes both alerts.
 
-Do not exceed **maximum wheel angle = 3580 / speed in km/h**. The limit is a constant yaw rate of about
-19 deg/s, not a constant angle and not a constant lateral acceleration.
+Limit the commanded wheel angle to **3580 / speed in km/h**, a constant yaw rate of 19 deg/s. Set this limit
+and the EPS holds the commanded angle through a tight turn.
 
-| Candidate invariant | Value at the limit | Spread |
-|---|---|---|
-| Wheel angle only | 177° | 16 % |
-| **Angle × speed (yaw rate)** | **19.1 deg/s** | **8.2 %** |
-| Angle × speed² (lateral acceleration) | 1.94 m/s² | 22 % |
+| Speed | Maximum wheel angle |
+|---:|---:|
+| 15 km/h | 239° |
+| 20 km/h | 179° |
+| 24 km/h | 149° |
 
-Basis: 14 routes, 9 limit events, each at 148° to 244° of wheel angle and 14 to 24 km/h. A log-log fit gives
-angle proportional to v^−0.73. Do not apply the exponent outside 14 to 24 km/h.
+The limit is established between 14 and 24 km/h only. Above 24 km/h, keep it and confirm the behaviour on
+your own vehicle.
 
-A 2-bit field at `0x1FC` bits 46–47 reports the condition 0.5 s early. The sequence is:
+Do not use a lateral-acceleration limit for this. The vehicle-model limiter defaults to about 3.6 m/s²,
+which is above what the EPS delivers, and lateral acceleration does not hold constant at the drop-out
+point.
+
+Read `0x1FC` bits 46–47. The field changes from 0 to 1 about 0.5 s before the EPS drops out. Use it to hand
+back control early. Without it, the command continues to as much as 52° past the angle the EPS refused, and
+the driver receives that step at the handover.
+
+Drop-out sequence, for diagnosis:
 
 1. The field changes from 0 to 1.
-2. The EPS holds its echoed `TARGET_ANGLE` constant and `MAIN_TORQUE` decreases. The wheel stops. openpilot
-   continues to as much as 52° past the held target.
+2. The EPS holds its echoed `TARGET_ANGLE` constant and `MAIN_TORQUE` decreases. The wheel stops.
 3. After 0.5 s the EPS sets `TARGET_ANGLE` to 0 and latches state 11.
 
-Read that field. openpilot does not, so its command continues past a target the EPS refused, and the driver
-receives that step at the handover.
-
-Lower the openpilot lateral limit to match the vehicle. The vehicle-model limiter permits about 3.6 m/s² of
-lateral acceleration, and the EPS stops near 1.3 to 2.5 m/s².
-
-Two limits are informational. `MAIN_TORQUE` stays in the range −252 to +251 while openpilot steers, which is
-the window the port declares in `0x1E2`. It is not established that the declaration sets that limit. Value 2
-of the 2-bit field occurred 13 times, 11 of them within 15° of straight ahead, with no known effect.
+Value 2 of the field has no known effect. It occurs near straight ahead.
 
 `byd_atto3.dbc` calls the field `TORQUE_TEMP_FAILED` with values `1 "TooLarge"` and `2 "TooFast"`. That
 label comes from opendbc PR #3337, an unmerged draft. No BYD document, no EPS diagnostic code and no other
-fork confirms it. Treat the name as unconfirmed. The measurements above do not depend on it.
+fork confirms it. Treat the name as unconfirmed. The limits above do not depend on it.
 
 ---
 
@@ -284,13 +284,11 @@ BUMPER_TO_RADAR_ORIGIN_M = 3.60   # front overhang 885 mm + wheelbase 2720 mm
 dRel = LONG_DIST - BUMPER_TO_RADAR_ORIGIN_M
 ```
 
-Without the correction each lead reads 3.6 m too far. Basis: against four leads of known body width the raw
-range read +3.21, +4.11, +2.04 and +3.62 m long, while vision stayed within 0.1 to 0.8 m. Cars and a truck
-read equally long, which shows the sensor origin and not a reflection point. Over 7863 radar-matched frames
-the radar-to-vision difference changed from **+4.18 m to +0.43 m** in the 0 to 12 m stopping band.
+Without the correction each lead reads 3.6 m too far. With it, the radar and the vision lead agree to within
+0.5 m below 12 m. Check that on your own vehicle before you use radar for longitudinal control.
 
-The correction also removes negative ranges from the maximum-range gate, and makes the cut-in window a true
-20 m instead of 16.4 m.
+Drop any track with a negative range after the correction. A target at the bumper reads about 3.6 raw. Set
+the cut-in window after the correction as well, or it is 3.6 m shorter than the value you set.
 
 Keep raw values in the decode reference that your replay validator scores. Put the conversion in the
 openpilot-facing interface.
